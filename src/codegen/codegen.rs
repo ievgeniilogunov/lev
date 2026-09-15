@@ -1,9 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{ HashMap, HashSet };
 use std::fmt::Write;
 
 use crate::ir::ir::{
-    BasicBlock, BlockId, IrBinaryOp, IrFunction, IrInstruction, IrProgram, Terminator, ValueId,
+    BasicBlock,
+    BlockId,
+    IrBinaryOp,
+    IrFunction,
+    IrInstruction,
+    IrProgram,
+    Terminator,
+    ValueId,
 };
+use crate::semantic::symbols::FunctionId;
 
 pub fn generate(program: &IrProgram) -> Result<String, String> {
     let mut output = String::new();
@@ -11,8 +19,13 @@ pub fn generate(program: &IrProgram) -> Result<String, String> {
     writeln!(output, ".intel_syntax noprefix").map_err(|e| e.to_string())?;
     writeln!(output, ".text").map_err(|e| e.to_string())?;
 
+    let function_names: HashMap<_, _> = program.functions
+        .iter()
+        .map(|function| (function.id, function.name.clone()))
+        .collect();
+
     for function in &program.functions {
-        generate_function(&mut output, function)?;
+        generate_function(&mut output, function, &function_names)?;
     }
 
     Ok(output)
@@ -34,6 +47,8 @@ struct FunctionCodegen<'a> {
     ///     copies that must happen when leaving that block
     edge_copies: HashMap<BlockId, Vec<(ValueId, ValueId)>>,
 
+    function_names: &'a HashMap<FunctionId, String>,
+
     next_stack_offset: i32,
 
     /// One extra stack slot used when parallel phi copies form a cycle.
@@ -41,12 +56,17 @@ struct FunctionCodegen<'a> {
 }
 
 impl<'a> FunctionCodegen<'a> {
-    fn new(output: &'a mut String, function: &'a IrFunction) -> Self {
+    fn new(
+        output: &'a mut String,
+        function: &'a IrFunction,
+        function_names: &'a HashMap<FunctionId, String>
+    ) -> Self {
         Self {
             output,
             function,
             value_slots: HashMap::new(),
             edge_copies: HashMap::new(),
+            function_names,
             next_stack_offset: 8,
             phi_temp_offset: 0,
         }
@@ -60,11 +80,9 @@ impl<'a> FunctionCodegen<'a> {
         self.phi_temp_offset = self.next_stack_offset;
         self.next_stack_offset += 8;
 
-        writeln!(self.output, ".globl {}", self.function.name)
-            .map_err(|e| e.to_string())?;
+        writeln!(self.output, ".globl {}", self.function.name).map_err(|e| e.to_string())?;
 
-        writeln!(self.output, "{}:", self.function.name)
-            .map_err(|e| e.to_string())?;
+        writeln!(self.output, "{}:", self.function.name).map_err(|e| e.to_string())?;
 
         self.emit_prologue()?;
 
@@ -82,12 +100,7 @@ impl<'a> FunctionCodegen<'a> {
     fn collect_phi_copies(&mut self) {
         for block in &self.function.blocks {
             for instruction in &block.instructions {
-                let IrInstruction::Phi {
-                    destination,
-                    sources,
-                    ..
-                } = instruction
-                else {
+                let IrInstruction::Phi { destination, sources, .. } = instruction else {
                     continue;
                 };
 
@@ -128,10 +141,7 @@ impl<'a> FunctionCodegen<'a> {
     ///     temp <- a
     ///     a <- b
     ///     b <- temp
-    fn emit_parallel_copies(
-        &mut self,
-        copies: &[(ValueId, ValueId)],
-    ) -> Result<(), String> {
+    fn emit_parallel_copies(&mut self, copies: &[(ValueId, ValueId)]) -> Result<(), String> {
         let mut pending: Vec<(ValueId, ValueId)> = copies.to_vec();
 
         while !pending.is_empty() {
@@ -139,8 +149,10 @@ impl<'a> FunctionCodegen<'a> {
 
             // First emit copies whose destination is not used as a source
             // by another pending copy.
-            let sources: HashSet<ValueId> =
-                pending.iter().map(|(source, _)| *source).collect();
+            let sources: HashSet<ValueId> = pending
+                .iter()
+                .map(|(source, _)| *source)
+                .collect();
 
             let mut index = 0;
 
@@ -176,12 +188,9 @@ impl<'a> FunctionCodegen<'a> {
 
             self.emit_load(source, "rax")?;
 
-            writeln!(
-                self.output,
-                "    mov [rbp-{}], rax",
-                self.phi_temp_offset
-            )
-            .map_err(|e| e.to_string())?;
+            writeln!(self.output, "    mov [rbp-{}], rax", self.phi_temp_offset).map_err(|e|
+                e.to_string()
+            )?;
 
             // Replace the source of this copy with a special temporary
             // representation by removing it and carrying the destination
@@ -191,9 +200,7 @@ impl<'a> FunctionCodegen<'a> {
             let mut current_destination = destination;
 
             loop {
-                let next_index = pending
-                    .iter()
-                    .position(|(_, destination)| *destination == source);
+                let next_index = pending.iter().position(|(_, destination)| *destination == source);
 
                 let Some(next_index) = next_index else {
                     break;
@@ -212,12 +219,9 @@ impl<'a> FunctionCodegen<'a> {
             }
 
             // Restore the original value from the temporary slot.
-            writeln!(
-                self.output,
-                "    mov rax, [rbp-{}]",
-                self.phi_temp_offset
-            )
-            .map_err(|e| e.to_string())?;
+            writeln!(self.output, "    mov rax, [rbp-{}]", self.phi_temp_offset).map_err(|e|
+                e.to_string()
+            )?;
 
             self.emit_store(current_destination, "rax")?;
         }
@@ -260,17 +264,14 @@ impl<'a> FunctionCodegen<'a> {
     }
 
     fn emit_prologue(&mut self) -> Result<(), String> {
-        writeln!(self.output, "    push rbp")
-            .map_err(|e| e.to_string())?;
+        writeln!(self.output, "    push rbp").map_err(|e| e.to_string())?;
 
-        writeln!(self.output, "    mov rbp, rsp")
-            .map_err(|e| e.to_string())?;
+        writeln!(self.output, "    mov rbp, rsp").map_err(|e| e.to_string())?;
 
         let stack_size = self.stack_size();
 
         if stack_size > 0 {
-            writeln!(self.output, "    sub rsp, {}", stack_size)
-                .map_err(|e| e.to_string())?;
+            writeln!(self.output, "    sub rsp, {}", stack_size).map_err(|e| e.to_string())?;
         }
 
         Ok(())
@@ -281,13 +282,9 @@ impl<'a> FunctionCodegen<'a> {
     // ---------------------------------------------------------------------
 
     fn emit_block(&mut self, block: &BasicBlock) -> Result<(), String> {
-        writeln!(
-            self.output,
-            ".L{}_{}:",
-            self.function.name,
-            block.id.0
-        )
-        .map_err(|e| e.to_string())?;
+        writeln!(self.output, ".L{}_{}:", self.function.name, block.id.0).map_err(|e|
+            e.to_string()
+        )?;
 
         for instruction in &block.instructions {
             // Phi instructions have already been converted into edge copies.
@@ -312,129 +309,149 @@ impl<'a> FunctionCodegen<'a> {
     // Instructions
     // ---------------------------------------------------------------------
 
-    fn emit_instruction(
-        &mut self,
-        instruction: &IrInstruction,
-    ) -> Result<(), String> {
+    fn function_name(&self, id: FunctionId) -> Option<&str> {
+        self.function_names.get(&id).map(String::as_str)
+    }
+
+    fn argument_register(index: usize) -> Option<&'static str> {
+        match index {
+            0 => Some("rdi"),
+            1 => Some("rsi"),
+            2 => Some("rdx"),
+            3 => Some("rcx"),
+            4 => Some("r8"),
+            5 => Some("r9"),
+            _ => None,
+        }
+    }
+
+    fn emit_instruction(&mut self, instruction: &IrInstruction) -> Result<(), String> {
         match instruction {
-            IrInstruction::Parameter {
-                destination,
-                local: _,
-            } => {
-                return Err(format!(
-                    "parameter code generation is not implemented yet for value {:?}",
-                    destination
-                ));
+            IrInstruction::Parameter { destination, local } => {
+                let parameter_index = self.function.parameters
+                    .iter()
+                    .position(|parameter| parameter.id == *local)
+                    .ok_or_else(|| {
+                        format!(
+                            "could not find parameter local {:?} in function '{}'",
+                            local,
+                            self.function.name
+                        )
+                    })?;
+
+                let register = Self::argument_register(parameter_index).ok_or_else(|| {
+                    format!("more than six integer parameters are not supported yet")
+                })?;
+
+                writeln!(self.output, "    mov rax, {}", register).map_err(|e| e.to_string())?;
+
+                self.emit_store(*destination, "rax")?;
             }
 
-            IrInstruction::ConstInt {
-                destination,
-                value,
-            } => {
+            IrInstruction::ConstInt { destination, value } => {
                 self.emit_load_immediate("rax", *value)?;
                 self.emit_store(*destination, "rax")?;
             }
 
-            IrInstruction::ConstString {
-                destination,
-                value,
-            } => {
-                return Err(format!(
-                    "string code generation is not implemented yet for {:?} = {:?}",
-                    destination,
-                    value
-                ));
+            IrInstruction::ConstString { destination, value } => {
+                return Err(
+                    format!(
+                        "string code generation is not implemented yet for {:?} = {:?}",
+                        destination,
+                        value
+                    )
+                );
             }
 
-            IrInstruction::ConstBool {
-                destination,
-                value,
-            } => {
+            IrInstruction::ConstBool { destination, value } => {
                 let value = if *value { 1 } else { 0 };
 
-                writeln!(self.output, "    mov rax, {}", value)
-                    .map_err(|e| e.to_string())?;
+                writeln!(self.output, "    mov rax, {}", value).map_err(|e| e.to_string())?;
 
                 self.emit_store(*destination, "rax")?;
             }
 
-            IrInstruction::LoadLocal {
-                destination,
-                local: _,
-            } => {
-                return Err(format!(
-                    "LoadLocal should have been removed by SSA construction: {:?}",
-                    destination
-                ));
+            IrInstruction::LoadLocal { destination, local: _ } => {
+                return Err(
+                    format!(
+                        "LoadLocal should have been removed by SSA construction: {:?}",
+                        destination
+                    )
+                );
             }
 
             IrInstruction::StoreLocal { local, value } => {
-                return Err(format!(
-                    "StoreLocal should have been removed by SSA construction: local {:?}, value {:?}",
-                    local,
-                    value
-                ));
+                return Err(
+                    format!(
+                        "StoreLocal should have been removed by SSA construction: local {:?}, value {:?}",
+                        local,
+                        value
+                    )
+                );
             }
 
-            IrInstruction::Binary {
-                destination,
-                op,
-                left,
-                right,
-            } => {
+            IrInstruction::Binary { destination, op, left, right } => {
                 self.emit_load(*left, "rax")?;
                 self.emit_load(*right, "rcx")?;
 
                 match op {
                     IrBinaryOp::Add => {
-                        writeln!(self.output, "    add rax, rcx")
-                            .map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    add rax, rcx").map_err(|e| e.to_string())?;
                     }
 
                     IrBinaryOp::Subtract => {
-                        writeln!(self.output, "    sub rax, rcx")
-                            .map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    sub rax, rcx").map_err(|e| e.to_string())?;
                     }
 
                     IrBinaryOp::Multiply => {
-                        writeln!(self.output, "    imul rax, rcx")
-                            .map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    imul rax, rcx").map_err(|e| e.to_string())?;
                     }
 
                     IrBinaryOp::Divide => {
-                        writeln!(self.output, "    cqo")
-                            .map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    cqo").map_err(|e| e.to_string())?;
 
-                        writeln!(self.output, "    idiv rcx")
-                            .map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    idiv rcx").map_err(|e| e.to_string())?;
                     }
 
                     IrBinaryOp::Equal => {
-                        writeln!(self.output, "    cmp rax, rcx")
-                            .map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    cmp rax, rcx").map_err(|e| e.to_string())?;
 
-                        writeln!(self.output, "    sete al")
-                            .map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    sete al").map_err(|e| e.to_string())?;
 
-                        writeln!(self.output, "    movzx rax, al")
-                            .map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    movzx rax, al").map_err(|e| e.to_string())?;
                     }
                 }
 
                 self.emit_store(*destination, "rax")?;
             }
 
-            IrInstruction::Call {
-                destination,
-                function,
-                arguments,
-            } => {
-                return Err(format!(
-                    "function calls are not implemented yet: function {:?}, destination {:?}, {} arguments",
-                    function,
-                    destination,
-                    arguments.len()
-                ));
+            IrInstruction::Call { destination, function, arguments } => {
+                if arguments.len() > 6 {
+                    return Err(
+                        format!(
+                            "function call has {} arguments, but only 6 integer arguments are currently supported",
+                            arguments.len()
+                        )
+                    );
+                }
+
+                let function_name = self.function_names
+                    .get(function)
+                    .ok_or_else(|| { format!("unknown function id {:?}", function) })?;
+
+                for (index, argument) in arguments.iter().enumerate() {
+                    let register = Self::argument_register(index).ok_or_else(|| {
+                        format!("no argument register available for argument {}", index)
+                    })?;
+
+                    self.emit_load_value(*argument, register)?;
+                }
+
+                writeln!(self.output, "    call {}", function_name).map_err(|e| e.to_string())?;
+
+                if let Some(destination) = destination {
+                    self.emit_store_value(*destination, "rax")?;
+                }
             }
 
             IrInstruction::Phi { .. } => {
@@ -445,47 +462,50 @@ impl<'a> FunctionCodegen<'a> {
         Ok(())
     }
 
+    fn emit_load_value(&mut self, value: ValueId, register: &str) -> Result<(), String> {
+        let offset = self.value_slots
+            .get(&value)
+            .ok_or_else(|| { format!("no stack slot allocated for SSA value {:?}", value) })?;
+
+        writeln!(self.output, "    mov {}, [rbp-{}]", register, offset).map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    fn emit_store_value(&mut self, value: ValueId, register: &str) -> Result<(), String> {
+        let offset = self.value_slots
+            .get(&value)
+            .ok_or_else(|| { format!("no stack slot allocated for SSA value {:?}", value) })?;
+
+        writeln!(self.output, "    mov [rbp-{}], {}", offset, register).map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------
     // Terminators
     // ---------------------------------------------------------------------
 
-    fn emit_terminator(
-        &mut self,
-        terminator: &Terminator,
-    ) -> Result<(), String> {
+    fn emit_terminator(&mut self, terminator: &Terminator) -> Result<(), String> {
         match terminator {
             Terminator::Jump(block) => {
-                writeln!(
-                    self.output,
-                    "    jmp {}",
-                    self.block_label(*block)
-                )
-                .map_err(|e| e.to_string())?;
+                writeln!(self.output, "    jmp {}", self.block_label(*block)).map_err(|e|
+                    e.to_string()
+                )?;
             }
 
-            Terminator::Branch {
-                condition,
-                then_block,
-                else_block,
-            } => {
+            Terminator::Branch { condition, then_block, else_block } => {
                 self.emit_load(*condition, "rax")?;
 
-                writeln!(self.output, "    cmp rax, 0")
-                    .map_err(|e| e.to_string())?;
+                writeln!(self.output, "    cmp rax, 0").map_err(|e| e.to_string())?;
 
-                writeln!(
-                    self.output,
-                    "    jne {}",
-                    self.block_label(*then_block)
-                )
-                .map_err(|e| e.to_string())?;
+                writeln!(self.output, "    jne {}", self.block_label(*then_block)).map_err(|e|
+                    e.to_string()
+                )?;
 
-                writeln!(
-                    self.output,
-                    "    jmp {}",
-                    self.block_label(*else_block)
-                )
-                .map_err(|e| e.to_string())?;
+                writeln!(self.output, "    jmp {}", self.block_label(*else_block)).map_err(|e|
+                    e.to_string()
+                )?;
             }
 
             Terminator::Return { value } => {
@@ -493,16 +513,13 @@ impl<'a> FunctionCodegen<'a> {
                     self.emit_load(*value, "rax")?;
                 }
 
-                writeln!(self.output, "    leave")
-                    .map_err(|e| e.to_string())?;
+                writeln!(self.output, "    leave").map_err(|e| e.to_string())?;
 
-                writeln!(self.output, "    ret")
-                    .map_err(|e| e.to_string())?;
+                writeln!(self.output, "    ret").map_err(|e| e.to_string())?;
             }
 
             Terminator::Unreachable => {
-                writeln!(self.output, "    ud2")
-                    .map_err(|e| e.to_string())?;
+                writeln!(self.output, "    ud2").map_err(|e| e.to_string())?;
             }
         }
 
@@ -513,70 +530,28 @@ impl<'a> FunctionCodegen<'a> {
     // Values
     // ---------------------------------------------------------------------
 
-    fn emit_load(
-        &mut self,
-        value: ValueId,
-        register: &str,
-    ) -> Result<(), String> {
-        let offset = self
-            .value_slots
+    fn emit_load(&mut self, value: ValueId, register: &str) -> Result<(), String> {
+        let offset = self.value_slots
             .get(&value)
-            .ok_or_else(|| {
-                format!(
-                    "no stack slot allocated for SSA value {:?}",
-                    value
-                )
-            })?;
+            .ok_or_else(|| { format!("no stack slot allocated for SSA value {:?}", value) })?;
 
-        writeln!(
-            self.output,
-            "    mov {}, [rbp-{}]",
-            register,
-            offset
-        )
-        .map_err(|e| e.to_string())?;
+        writeln!(self.output, "    mov {}, [rbp-{}]", register, offset).map_err(|e| e.to_string())?;
 
         Ok(())
     }
 
-    fn emit_store(
-        &mut self,
-        value: ValueId,
-        register: &str,
-    ) -> Result<(), String> {
-        let offset = self
-            .value_slots
+    fn emit_store(&mut self, value: ValueId, register: &str) -> Result<(), String> {
+        let offset = self.value_slots
             .get(&value)
-            .ok_or_else(|| {
-                format!(
-                    "no stack slot allocated for SSA value {:?}",
-                    value
-                )
-            })?;
+            .ok_or_else(|| { format!("no stack slot allocated for SSA value {:?}", value) })?;
 
-        writeln!(
-            self.output,
-            "    mov [rbp-{}], {}",
-            offset,
-            register
-        )
-        .map_err(|e| e.to_string())?;
+        writeln!(self.output, "    mov [rbp-{}], {}", offset, register).map_err(|e| e.to_string())?;
 
         Ok(())
     }
 
-    fn emit_load_immediate(
-        &mut self,
-        register: &str,
-        value: i64,
-    ) -> Result<(), String> {
-        writeln!(
-            self.output,
-            "    mov {}, {}",
-            register,
-            value
-        )
-        .map_err(|e| e.to_string())?;
+    fn emit_load_immediate(&mut self, register: &str, value: i64) -> Result<(), String> {
+        writeln!(self.output, "    mov {}, {}", register, value).map_err(|e| e.to_string())?;
 
         Ok(())
     }
@@ -590,49 +565,32 @@ impl<'a> FunctionCodegen<'a> {
 // Helpers
 // -------------------------------------------------------------------------
 
-fn instruction_destination(
-    instruction: &IrInstruction,
-) -> Option<ValueId> {
+fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
     match instruction {
-        IrInstruction::Parameter { destination, .. } => {
-            Some(*destination)
-        }
+        IrInstruction::Parameter { destination, .. } => { Some(*destination) }
 
-        IrInstruction::ConstInt { destination, .. } => {
-            Some(*destination)
-        }
+        IrInstruction::ConstInt { destination, .. } => { Some(*destination) }
 
-        IrInstruction::ConstString { destination, .. } => {
-            Some(*destination)
-        }
+        IrInstruction::ConstString { destination, .. } => { Some(*destination) }
 
-        IrInstruction::ConstBool { destination, .. } => {
-            Some(*destination)
-        }
+        IrInstruction::ConstBool { destination, .. } => { Some(*destination) }
 
-        IrInstruction::LoadLocal { destination, .. } => {
-            Some(*destination)
-        }
+        IrInstruction::LoadLocal { destination, .. } => { Some(*destination) }
 
         IrInstruction::StoreLocal { .. } => None,
 
-        IrInstruction::Binary { destination, .. } => {
-            Some(*destination)
-        }
+        IrInstruction::Binary { destination, .. } => { Some(*destination) }
 
-        IrInstruction::Call { destination, .. } => {
-            *destination
-        }
+        IrInstruction::Call { destination, .. } => { *destination }
 
-        IrInstruction::Phi { destination, .. } => {
-            Some(*destination)
-        }
+        IrInstruction::Phi { destination, .. } => { Some(*destination) }
     }
 }
 
 fn generate_function(
     output: &mut String,
     function: &IrFunction,
+    function_names: &HashMap<FunctionId, String>
 ) -> Result<(), String> {
-    FunctionCodegen::new(output, function).generate()
+    FunctionCodegen::new(output, function, function_names).generate()
 }

@@ -198,14 +198,12 @@ impl Analyzer {
     // ---------------------------------------------------------------------
     // Functions
     // ---------------------------------------------------------------------
-
     fn analyze_function(
         &mut self,
         function: &FunctionDecl,
         function_id: FunctionId
     ) -> HirFunction {
         let symbol = self.symbols.function_symbol(function_id).clone();
-
         let mut scope = Scope::new();
 
         let mut params = Vec::new();
@@ -241,6 +239,7 @@ impl Analyzer {
         let locals = scope
             .locals()
             .iter()
+            .filter(|(id, _, _)| { !params.iter().any(|param| param.local == *id) })
             .map(|(id, name, ty)| HirLocal {
                 id: *id,
                 name: name.clone(),
@@ -715,7 +714,10 @@ impl Analyzer {
                     .map(|(index, argument)| {
                         let value = self.analyze_expr(argument, scope);
 
-                        if let Some(parameter) = function.parameters.get(index) && value.ty != parameter.ty {
+                        if
+                            let Some(parameter) = function.parameters.get(index) &&
+                            value.ty != parameter.ty
+                        {
                             self.errors.push(
                                 Diagnostic::at(
                                     format!(
