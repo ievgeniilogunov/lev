@@ -7,6 +7,8 @@ mod semantic;
 
 use std::{env, fs, process};
 
+use crate::codegen::CodegenTarget;
+
 fn main() {
     let path = match env::args().nth(1) {
         Some(path) => path,
@@ -37,7 +39,7 @@ fn main() {
 
     println!("{}", program);
 
-    match codegen::generate(&program) {
+    match codegen::generate(&program, CodegenTarget::X86_64MacOS) {
         Ok(assembly) => {
             println!("{}", assembly);
         }

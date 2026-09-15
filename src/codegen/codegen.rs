@@ -13,7 +13,13 @@ use crate::ir::ir::{
 };
 use crate::semantic::symbols::FunctionId;
 
-pub fn generate(program: &IrProgram) -> Result<String, String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodegenTarget {
+    X86_64,
+    X86_64MacOS,
+}
+
+pub fn generate(program: &IrProgram, target: CodegenTarget) -> Result<String, String> {
     let mut output = String::new();
 
     writeln!(output, ".intel_syntax noprefix").map_err(|e| e.to_string())?;
@@ -25,7 +31,7 @@ pub fn generate(program: &IrProgram) -> Result<String, String> {
         .collect();
 
     for function in &program.functions {
-        generate_function(&mut output, function, &function_names)?;
+        generate_function(&mut output, function, &function_names, target)?;
     }
 
     Ok(output)
@@ -51,6 +57,8 @@ struct FunctionCodegen<'a> {
 
     next_stack_offset: i32,
 
+    target: CodegenTarget,
+
     /// One extra stack slot used when parallel phi copies form a cycle.
     phi_temp_offset: i32,
 }
@@ -59,7 +67,8 @@ impl<'a> FunctionCodegen<'a> {
     fn new(
         output: &'a mut String,
         function: &'a IrFunction,
-        function_names: &'a HashMap<FunctionId, String>
+        function_names: &'a HashMap<FunctionId, String>,
+        target: CodegenTarget
     ) -> Self {
         Self {
             output,
@@ -69,6 +78,14 @@ impl<'a> FunctionCodegen<'a> {
             function_names,
             next_stack_offset: 8,
             phi_temp_offset: 0,
+            target,
+        }
+    }
+
+    fn symbol_name(&self, name: &str) -> String {
+        match self.target {
+            CodegenTarget::X86_64 => name.to_string(),
+            CodegenTarget::X86_64MacOS => format!("_{}", name),
         }
     }
 
@@ -80,9 +97,11 @@ impl<'a> FunctionCodegen<'a> {
         self.phi_temp_offset = self.next_stack_offset;
         self.next_stack_offset += 8;
 
-        writeln!(self.output, ".globl {}", self.function.name).map_err(|e| e.to_string())?;
+        let symbol = self.symbol_name(&self.function.name);
 
-        writeln!(self.output, "{}:", self.function.name).map_err(|e| e.to_string())?;
+        writeln!(self.output, ".globl {}", symbol).map_err(|e| e.to_string())?;
+
+        writeln!(self.output, "{}:", symbol).map_err(|e| e.to_string())?;
 
         self.emit_prologue()?;
 
@@ -282,9 +301,9 @@ impl<'a> FunctionCodegen<'a> {
     // ---------------------------------------------------------------------
 
     fn emit_block(&mut self, block: &BasicBlock) -> Result<(), String> {
-        writeln!(self.output, ".L{}_{}:", self.function.name, block.id.0).map_err(|e|
-            e.to_string()
-        )?;
+        let symbol = self.symbol_name(&self.function.name);
+
+        writeln!(self.output, ".L{}_{}:", symbol, block.id.0).map_err(|e| e.to_string())?;
 
         for instruction in &block.instructions {
             // Phi instructions have already been converted into edge copies.
@@ -328,6 +347,7 @@ impl<'a> FunctionCodegen<'a> {
     fn emit_instruction(&mut self, instruction: &IrInstruction) -> Result<(), String> {
         match instruction {
             IrInstruction::Parameter { destination, local } => {
+                let symbol = self.symbol_name(&self.function.name);
                 let parameter_index = self.function.parameters
                     .iter()
                     .position(|parameter| parameter.id == *local)
@@ -335,7 +355,7 @@ impl<'a> FunctionCodegen<'a> {
                         format!(
                             "could not find parameter local {:?} in function '{}'",
                             local,
-                            self.function.name
+                            symbol
                         )
                     })?;
 
@@ -447,7 +467,9 @@ impl<'a> FunctionCodegen<'a> {
                     self.emit_load_value(*argument, register)?;
                 }
 
-                writeln!(self.output, "    call {}", function_name).map_err(|e| e.to_string())?;
+                let symbol = self.symbol_name(function_name);
+
+                writeln!(self.output, "    call {}", symbol).map_err(|e| e.to_string())?;
 
                 if let Some(destination) = destination {
                     self.emit_store_value(*destination, "rax")?;
@@ -557,7 +579,9 @@ impl<'a> FunctionCodegen<'a> {
     }
 
     fn block_label(&self, block: BlockId) -> String {
-        format!(".L{}_{}", self.function.name, block.0)
+        let symbol = self.symbol_name(&self.function.name);
+
+        format!(".L{}_{}", symbol, block.0)
     }
 }
 
@@ -590,7 +614,8 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
 fn generate_function(
     output: &mut String,
     function: &IrFunction,
-    function_names: &HashMap<FunctionId, String>
+    function_names: &HashMap<FunctionId, String>,
+    target: CodegenTarget
 ) -> Result<(), String> {
-    FunctionCodegen::new(output, function, function_names).generate()
+    FunctionCodegen::new(output, function, function_names, target).generate()
 }
