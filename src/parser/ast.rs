@@ -1,0 +1,178 @@
+use crate::compiler::source::Span;
+
+#[derive(Debug, Clone)]
+pub struct Program {
+    pub structs: Vec<StructDecl>,
+    pub functions: Vec<FunctionDecl>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Item {
+    Struct(StructDecl),
+    Function(FunctionDecl),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructDecl {
+    pub name: String,
+    pub fields: Vec<FieldDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldDecl {
+    pub name: String,
+    pub ty: TypeName,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct Field {
+    pub name: String,
+    pub ty: TypeName,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDecl {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: TypeName,
+    pub body: Stmt,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Param {
+    pub name: String,
+    pub ty: TypeName,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub statements: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Stmt {
+    Assign {
+        name: String,
+        value: Expr,
+        span: Span,
+    },
+
+    Block {
+      statements: Vec<Stmt>,
+      span: Span,
+    },
+
+    Let {
+        name: String,
+        ty: TypeName,
+        value: Expr,
+        span: Span,
+    },
+
+    Return {
+        value: Option<Expr>,
+        span: Span,
+    },
+
+    Expr {
+        expr: Expr,
+        span: Span,
+    },
+
+    If {
+        condition: Expr,
+        then_block: Box<Stmt>,
+        else_block: Option<Box<Stmt>>,
+        span: Span,
+    },
+
+    While {
+        condition: Expr,
+        body: Box<Stmt>,
+        span: Span,
+    },
+
+    Break {
+        span: Span,
+    },
+
+    Continue {
+        span: Span,
+    },
+}
+
+impl Stmt {
+    pub fn span(&self) -> Span {
+        match self {
+            Stmt::Block { span, .. }
+            | Stmt::Let { span, .. }
+            | Stmt::Assign { span, .. }
+            | Stmt::Return { span, .. }
+            | Stmt::Expr { span, .. }
+            | Stmt::If { span, .. }
+            | Stmt::While { span, .. }
+            | Stmt::Break { span }
+            | Stmt::Continue { span } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr {
+    Integer {
+        value: i64,
+        span: Span,
+    },
+
+    String {
+        value: String,
+        span: Span,
+    },
+
+    Bool {
+        value: bool,
+        span: Span,
+    },
+
+    Identifier {
+        name: String,
+        span: Span,
+    },
+
+    Binary {
+        op: BinaryOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        span: Span,
+    },
+
+    Call {
+        name: String,
+        arguments: Vec<Expr>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BinaryOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Equal,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeName {
+    Int,
+    String,
+    Bool,
+    Void,
+    Named(String),
+}

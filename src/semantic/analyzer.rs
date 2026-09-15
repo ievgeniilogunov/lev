@@ -1,0 +1,1190 @@
+use std::collections::HashSet;
+
+use crate::compiler::{ diagnostics::Diagnostic, source::Span };
+
+use crate::parser::ast::*;
+
+use super::{ hir::*, scope::Scope, symbols::*, types::Type };
+
+pub fn analyze(program: Program) -> Result<HirProgram, Vec<Diagnostic>> {
+    let mut analyzer = Analyzer::new();
+
+    analyzer.collect_struct_names(&program);
+    analyzer.collect_function_signatures(&program);
+    analyzer.collect_struct_fields(&program);
+
+    if !analyzer.errors.is_empty() {
+        return Err(analyzer.errors);
+    }
+
+    let hir = analyzer.analyze_program(&program);
+
+    if analyzer.errors.is_empty() {
+        Ok(hir)
+    } else {
+        Err(analyzer.errors)
+    }
+}
+
+struct Analyzer {
+    symbols: SymbolTable,
+    errors: Vec<Diagnostic>,
+}
+
+impl Analyzer {
+    fn new() -> Self {
+        Self {
+            symbols: SymbolTable::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Symbol collection
+    // ---------------------------------------------------------------------
+
+    fn collect_struct_names(&mut self, program: &Program) {
+        for structure in &program.structs {
+            if let Err(error) = self.symbols.add_struct(structure.name.clone()) {
+                self.errors.push(Diagnostic::at(error, structure.span));
+            }
+        }
+    }
+
+    fn collect_function_signatures(&mut self, program: &Program) {
+        for function in &program.functions {
+            let mut parameters = Vec::new();
+            let mut seen_parameters = HashSet::new();
+
+            for parameter in &function.params {
+                if !seen_parameters.insert(parameter.name.clone()) {
+                    self.errors.push(
+                        Diagnostic::at(
+                            format!("parameter '{}' is duplicated", parameter.name),
+                            parameter.span
+                        )
+                    );
+                    continue;
+                }
+
+                if let Some(ty) = self.resolve_type(&parameter.ty, parameter.span) {
+                    parameters.push(ParameterSymbol {
+                        name: parameter.name.clone(),
+                        ty,
+                    });
+                }
+            }
+
+            let return_type = self
+                .resolve_type(&function.return_type, function.span)
+                .unwrap_or(Type::Void);
+
+            if
+                let Err(error) = self.symbols.add_function(
+                    function.name.clone(),
+                    parameters,
+                    return_type
+                )
+            {
+                self.errors.push(Diagnostic::at(error, function.span));
+            }
+        }
+    }
+
+    fn collect_struct_fields(&mut self, program: &Program) {
+        for structure in &program.structs {
+            let Some(struct_id) = self.symbols.find_struct(&structure.name) else {
+                continue;
+            };
+
+            let mut fields = Vec::new();
+
+            for field in &structure.fields {
+                let ty = self.resolve_type(&field.ty, field.span);
+
+                if fields.iter().any(|existing: &FieldSymbol| existing.name == field.name) {
+                    self.errors.push(
+                        Diagnostic::at(
+                            format!(
+                                "field '{}' is already declared in struct '{}'",
+                                field.name,
+                                structure.name
+                            ),
+                            field.span
+                        )
+                    );
+                    continue;
+                }
+
+                if let Some(ty) = ty {
+                    fields.push(FieldSymbol {
+                        name: field.name.clone(),
+                        ty,
+                    });
+                }
+            }
+
+            self.symbols.set_struct_fields(struct_id, fields);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Type resolution
+    // ---------------------------------------------------------------------
+
+    fn resolve_type(&mut self, ty: &TypeName, span: Span) -> Option<Type> {
+        if let Some(type_) = Type::from_ast_builtin(ty) {
+            return Some(type_);
+        }
+
+        let TypeName::Named(name) = ty else {
+            return None;
+        };
+
+        if let Some(struct_id) = self.symbols.find_struct(name) {
+            return Some(Type::Struct(struct_id));
+        }
+
+        self.errors.push(Diagnostic::at(format!("unknown type '{}'", name), span));
+
+        None
+    }
+
+    // ---------------------------------------------------------------------
+    // Program
+    // ---------------------------------------------------------------------
+
+    fn analyze_program(&mut self, program: &Program) -> HirProgram {
+        let mut structs = Vec::new();
+
+        for structure in &program.structs {
+            let Some(id) = self.symbols.find_struct(&structure.name) else {
+                continue;
+            };
+
+            let symbol = self.symbols.struct_symbol(id);
+
+            let fields = symbol.fields
+                .iter()
+                .map(|field| HirField {
+                    name: field.name.clone(),
+                    ty: field.ty.clone(),
+                })
+                .collect();
+
+            structs.push(HirStruct {
+                id,
+                name: structure.name.clone(),
+                fields,
+            });
+        }
+
+        let mut functions = Vec::new();
+
+        for function in &program.functions {
+            let Some(id) = self.symbols.find_function(&function.name) else {
+                continue;
+            };
+
+            functions.push(self.analyze_function(function, id));
+        }
+
+        HirProgram {
+            structs,
+            functions,
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Functions
+    // ---------------------------------------------------------------------
+
+    fn analyze_function(
+        &mut self,
+        function: &FunctionDecl,
+        function_id: FunctionId
+    ) -> HirFunction {
+        let symbol = self.symbols.function_symbol(function_id).clone();
+
+        let mut scope = Scope::new();
+
+        let mut params = Vec::new();
+
+        for parameter in &symbol.parameters {
+            match scope.declare(parameter.name.clone(), parameter.ty.clone()) {
+                Ok(local) => {
+                    params.push(HirParam {
+                        local,
+                        name: parameter.name.clone(),
+                        ty: parameter.ty.clone(),
+                    });
+                }
+
+                Err(error) => {
+                    self.errors.push(Diagnostic::at(error, function.span));
+                }
+            }
+        }
+
+        let body = match self.analyze_block(&function.body, &mut scope, &symbol.return_type, 0) {
+            Ok(body) => body,
+
+            Err(errors) => {
+                self.errors.extend(errors);
+
+                HirBlock {
+                    statements: Vec::new(),
+                }
+            }
+        };
+
+        let locals = scope
+            .locals()
+            .iter()
+            .map(|(id, name, ty)| HirLocal {
+                id: *id,
+                name: name.clone(),
+                ty: ty.clone(),
+            })
+            .collect();
+
+        HirFunction {
+            id: function_id,
+            name: symbol.name,
+            params,
+            locals,
+            return_type: symbol.return_type,
+            body,
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Blocks
+    // ---------------------------------------------------------------------
+
+    fn analyze_block(
+        &mut self,
+        statement: &Stmt,
+        scope: &mut Scope,
+        return_type: &Type,
+        loop_depth: usize
+    ) -> Result<HirBlock, Vec<Diagnostic>> {
+        let Stmt::Block { statements, .. } = statement else {
+            return Err(vec![Diagnostic::new("internal error: expected block statement")]);
+        };
+
+        scope.push_scope();
+
+        let mut hir_stmnt = Vec::new();
+        let mut errors = Vec::new();
+
+        for statement in statements {
+            match self.analyze_statement(statement, scope, return_type, loop_depth) {
+                Ok(statement) => hir_stmnt.push(statement),
+
+                Err(mut statement_errors) => {
+                    errors.append(&mut statement_errors);
+                }
+            }
+        }
+
+        scope.pop_scope();
+
+        if errors.is_empty() {
+            Ok(HirBlock {
+                statements: hir_stmnt,
+            })
+        } else {
+            Err(errors)
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Statements
+    // ---------------------------------------------------------------------
+
+    fn analyze_statement(
+        &mut self,
+        statement: &Stmt,
+        scope: &mut Scope,
+        return_type: &Type,
+        loop_depth: usize
+    ) -> Result<HirStmt, Vec<Diagnostic>> {
+        match statement {
+            Stmt::Assign { name, value, span } => {
+                let local = match scope.lookup(name) {
+                    Some(local) => local,
+
+                    None => {
+                        return Err(
+                            vec![Diagnostic::at(format!("unknown variable '{}'", name), *span)]
+                        );
+                    }
+                };
+
+                let expected = match scope.type_of(local) {
+                    Some(ty) => ty.clone(),
+
+                    None => {
+                        return Err(
+                            vec![Diagnostic::at("internal error: missing type for local", *span)]
+                        );
+                    }
+                };
+
+                let value = self.analyze_expr(value, scope);
+
+                if value.ty != expected {
+                    return Err(
+                        vec![
+                            Diagnostic::at(
+                                format!(
+                                    "cannot assign {:?} to variable '{}' of type {:?}",
+                                    value.ty,
+                                    name,
+                                    expected
+                                ),
+                                *span
+                            )
+                        ]
+                    );
+                }
+
+                Ok(HirStmt::Assign { local, value })
+            }
+
+            Stmt::Block { .. } =>
+                Err(vec![Diagnostic::new("internal error: unexpected nested block statement")]),
+
+            Stmt::Let { name, ty, value, span } => {
+                let declared_type = match self.resolve_type(ty, *span) {
+                    Some(ty) => ty,
+
+                    None => {
+                        return Err(
+                            vec![
+                                Diagnostic::at(
+                                    "cannot determine type of variable declaration",
+                                    *span
+                                )
+                            ]
+                        );
+                    }
+                };
+
+                let value = self.analyze_expr(value, scope);
+
+                if value.ty != declared_type {
+                    return Err(
+                        vec![
+                            Diagnostic::at(
+                                format!(
+                                    "cannot initialize variable '{}' of type {:?} with value of type {:?}",
+                                    name,
+                                    declared_type,
+                                    value.ty
+                                ),
+                                *span
+                            )
+                        ]
+                    );
+                }
+
+                let local = match scope.declare(name.clone(), declared_type) {
+                    Ok(local) => local,
+
+                    Err(error) => {
+                        return Err(vec![Diagnostic::at(error, *span)]);
+                    }
+                };
+
+                Ok(HirStmt::Let { local, value })
+            }
+
+            Stmt::Return { value, span } => {
+                match (return_type, value) {
+                    (Type::Void, None) => { Ok(HirStmt::Return { value: None }) }
+
+                    (Type::Void, Some(expression)) => {
+                        let value = self.analyze_expr(expression, scope);
+
+                        Err(
+                            vec![
+                                Diagnostic::at(
+                                    format!(
+                                        "void function cannot return a value of type {:?}",
+                                        value.ty
+                                    ),
+                                    *span
+                                )
+                            ]
+                        )
+                    }
+
+                    (expected, None) => {
+                        Err(
+                            vec![
+                                Diagnostic::at(
+                                    format!("function must return a value of type {:?}", expected),
+                                    *span
+                                )
+                            ]
+                        )
+                    }
+
+                    (expected, Some(expression)) => {
+                        let value = self.analyze_expr(expression, scope);
+
+                        if value.ty != *expected {
+                            return Err(
+                                vec![
+                                    Diagnostic::at(
+                                        format!(
+                                            "cannot return value of type {:?} from function returning {:?}",
+                                            value.ty,
+                                            expected
+                                        ),
+                                        *span
+                                    )
+                                ]
+                            );
+                        }
+
+                        Ok(HirStmt::Return {
+                            value: Some(value),
+                        })
+                    }
+                }
+            }
+
+            Stmt::Expr { expr, .. } => {
+                let expr = self.analyze_expr(expr, scope);
+
+                Ok(HirStmt::Expr(expr))
+            }
+
+            Stmt::If { condition, then_block, else_block, span } => {
+                let condition = self.analyze_expr(condition, scope);
+
+                if condition.ty != Type::Bool {
+                    return Err(
+                        vec![
+                            Diagnostic::at(
+                                format!("if condition must be bool, found {:?}", condition.ty),
+                                *span
+                            )
+                        ]
+                    );
+                }
+
+                let then_block = match
+                    self.analyze_block(then_block, scope, return_type, loop_depth)
+                {
+                    Ok(block) => block,
+
+                    Err(errors) => {
+                        return Err(errors);
+                    }
+                };
+
+                let else_block = match else_block {
+                    Some(block) => Some(self.analyze_block(block, scope, return_type, loop_depth)?),
+
+                    None => None,
+                };
+
+                Ok(HirStmt::If {
+                    condition,
+                    then_block,
+                    else_block,
+                })
+            }
+
+            Stmt::While { condition, body, span } => {
+                let condition = self.analyze_expr(condition, scope);
+
+                if condition.ty != Type::Bool {
+                    return Err(
+                        vec![
+                            Diagnostic::at(
+                                format!("while condition must be bool, found {:?}", condition.ty),
+                                *span
+                            )
+                        ]
+                    );
+                }
+
+                let body = self.analyze_block(body, scope, return_type, loop_depth + 1)?;
+
+                Ok(HirStmt::While {
+                    condition,
+                    body,
+                })
+            }
+
+            Stmt::Break { span } => {
+                if loop_depth == 0 {
+                    return Err(vec![Diagnostic::at("'break' is only valid inside a loop", *span)]);
+                }
+
+                Ok(HirStmt::Break)
+            }
+
+            Stmt::Continue { span } => {
+                if loop_depth == 0 {
+                    return Err(
+                        vec![Diagnostic::at("'continue' is only valid inside a loop", *span)]
+                    );
+                }
+
+                Ok(HirStmt::Continue)
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Expressions
+    // ---------------------------------------------------------------------
+
+    fn analyze_expr(&mut self, expression: &Expr, scope: &Scope) -> HirExpr {
+        match expression {
+            Expr::Integer { value, span } =>
+                HirExpr {
+                    kind: HirExprKind::Integer(*value),
+                    ty: Type::Int,
+                    span: *span,
+                },
+
+            Expr::String { value, span } =>
+                HirExpr {
+                    kind: HirExprKind::String(value.clone()),
+                    ty: Type::String,
+                    span: *span,
+                },
+
+            Expr::Bool { value, span } =>
+                HirExpr {
+                    kind: HirExprKind::Bool(*value),
+                    ty: Type::Bool,
+                    span: *span,
+                },
+
+            Expr::Identifier { name, span } => {
+                match scope.lookup(name) {
+                    Some(local) => {
+                        let ty = match scope.type_of(local) {
+                            Some(ty) => ty.clone(),
+
+                            None => {
+                                self.errors.push(
+                                    Diagnostic::at("internal error: missing type for local", *span)
+                                );
+
+                                Type::Int
+                            }
+                        };
+
+                        HirExpr {
+                            kind: HirExprKind::Local(local),
+                            ty,
+                            span: *span,
+                        }
+                    }
+
+                    None => {
+                        self.errors.push(
+                            Diagnostic::at(format!("unknown variable '{}'", name), *span)
+                        );
+
+                        HirExpr {
+                            kind: HirExprKind::Integer(0),
+                            ty: Type::Int,
+                            span: *span,
+                        }
+                    }
+                }
+            }
+
+            Expr::Binary { op, left, right, span } => {
+                let left = self.analyze_expr(left, scope);
+                let right = self.analyze_expr(right, scope);
+
+                match op {
+                    BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                        if left.ty != Type::Int || right.ty != Type::Int {
+                            self.errors.push(
+                                Diagnostic::at(
+                                    format!(
+                                        "arithmetic operator requires int operands, found {:?} and {:?}",
+                                        left.ty,
+                                        right.ty
+                                    ),
+                                    *span
+                                )
+                            );
+
+                            return HirExpr {
+                                kind: HirExprKind::Integer(0),
+                                ty: Type::Int,
+                                span: *span,
+                            };
+                        }
+
+                        let op = match op {
+                            BinaryOp::Add => HirBinaryOp::Add,
+                            BinaryOp::Subtract => HirBinaryOp::Subtract,
+                            BinaryOp::Multiply => HirBinaryOp::Multiply,
+                            BinaryOp::Divide => HirBinaryOp::Divide,
+                            BinaryOp::Equal => unreachable!(),
+                        };
+
+                        HirExpr {
+                            kind: HirExprKind::Binary {
+                                left: Box::new(left),
+                                op,
+                                right: Box::new(right),
+                            },
+                            ty: Type::Int,
+                            span: *span,
+                        }
+                    }
+
+                    BinaryOp::Equal => {
+                        if left.ty != right.ty {
+                            self.errors.push(
+                                Diagnostic::at(
+                                    format!(
+                                        "cannot compare values of different types: {:?} and {:?}",
+                                        left.ty,
+                                        right.ty
+                                    ),
+                                    *span
+                                )
+                            );
+
+                            return HirExpr {
+                                kind: HirExprKind::Bool(false),
+                                ty: Type::Bool,
+                                span: *span,
+                            };
+                        }
+
+                        HirExpr {
+                            kind: HirExprKind::Binary {
+                                left: Box::new(left),
+                                op: HirBinaryOp::Equal,
+                                right: Box::new(right),
+                            },
+                            ty: Type::Bool,
+                            span: *span,
+                        }
+                    }
+                }
+            }
+
+            Expr::Call { name, arguments, span } => {
+                let Some(function_id) = self.symbols.find_function(name) else {
+                    self.errors.push(Diagnostic::at(format!("unknown function '{}'", name), *span));
+
+                    return HirExpr {
+                        kind: HirExprKind::Integer(0),
+                        ty: Type::Int,
+                        span: *span,
+                    };
+                };
+
+                let function = self.symbols.function_symbol(function_id).clone();
+
+                if arguments.len() != function.parameters.len() {
+                    self.errors.push(
+                        Diagnostic::at(
+                            format!(
+                                "function '{}' expects {} argument(s), found {}",
+                                name,
+                                function.parameters.len(),
+                                arguments.len()
+                            ),
+                            *span
+                        )
+                    );
+                }
+
+                let analyzed_arguments: Vec<HirExpr> = arguments
+                    .iter()
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        let value = self.analyze_expr(argument, scope);
+
+                        if let Some(parameter) = function.parameters.get(index) && value.ty != parameter.ty {
+                            self.errors.push(
+                                Diagnostic::at(
+                                    format!(
+                                        "argument {} of '{}' has type {:?}, expected {:?}",
+                                        index + 1,
+                                        name,
+                                        value.ty,
+                                        parameter.ty
+                                    ),
+                                    value.span
+                                )
+                            );
+                        }
+
+                        value
+                    })
+                    .collect();
+
+                HirExpr {
+                    kind: HirExprKind::Call {
+                        function: function_id,
+                        arguments: analyzed_arguments,
+                    },
+                    ty: function.return_type,
+                    span: *span,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::source::Span;
+    use crate::parser::ast::{ BinaryOp, Expr, FunctionDecl, Param, Program, Stmt, TypeName };
+
+    fn span() -> Span {
+        Span::new(0, 1)
+    }
+
+    fn int(value: i64) -> Expr {
+        Expr::Integer {
+            value,
+            span: span(),
+        }
+    }
+
+    fn string(value: &str) -> Expr {
+        Expr::String {
+            value: value.to_string(),
+            span: span(),
+        }
+    }
+
+    fn boolean(value: bool) -> Expr {
+        Expr::Bool {
+            value,
+            span: span(),
+        }
+    }
+
+    fn identifier(name: &str) -> Expr {
+        Expr::Identifier {
+            name: name.to_string(),
+            span: span(),
+        }
+    }
+
+    fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
+        Expr::Binary {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+            span: span(),
+        }
+    }
+
+    fn block(statements: Vec<Stmt>) -> Stmt {
+        Stmt::Block {
+            statements,
+            span: span(),
+        }
+    }
+
+    fn function(name: &str, return_type: TypeName, statements: Vec<Stmt>) -> FunctionDecl {
+        FunctionDecl {
+            name: name.to_string(),
+            params: Vec::new(),
+            return_type,
+            body: block(statements),
+            span: span(),
+        }
+    }
+
+    fn program(functions: Vec<FunctionDecl>) -> Program {
+        Program {
+            structs: Vec::new(),
+            functions,
+        }
+    }
+
+    #[test]
+    fn analyzes_integer_return() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![Stmt::Return {
+                        value: Some(int(42)),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_ok(), "expected successful analysis: {result:?}");
+
+        let hir = result.unwrap();
+        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(hir.functions[0].name, "main");
+        assert_eq!(hir.functions[0].return_type, Type::Int);
+    }
+
+    #[test]
+    fn rejects_return_type_mismatch() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![Stmt::Return {
+                        value: Some(string("wrong")),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains("return")),
+            "expected return-type diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_variable() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![Stmt::Return {
+                        value: Some(identifier("missing")),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains("unknown variable")),
+            "expected unknown-variable diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_local_variable_and_assignment() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![
+                        Stmt::Let {
+                            name: "x".to_string(),
+                            ty: TypeName::Int,
+                            value: int(10),
+                            span: span(),
+                        },
+                        Stmt::Assign {
+                            name: "x".to_string(),
+                            value: int(20),
+                            span: span(),
+                        },
+                        Stmt::Return {
+                            value: Some(identifier("x")),
+                            span: span(),
+                        }
+                    ]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_ok(), "expected successful analysis: {result:?}");
+
+        let hir = result.unwrap();
+        let function = &hir.functions[0];
+
+        assert_eq!(function.locals.len(), 1);
+        assert_eq!(function.locals[0].name, "x");
+        assert_eq!(function.locals[0].ty, Type::Int);
+    }
+
+    #[test]
+    fn rejects_assignment_type_mismatch() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![
+                        Stmt::Let {
+                            name: "x".to_string(),
+                            ty: TypeName::Int,
+                            value: int(10),
+                            span: span(),
+                        },
+                        Stmt::Assign {
+                            name: "x".to_string(),
+                            value: string("wrong"),
+                            span: span(),
+                        },
+                        Stmt::Return {
+                            value: Some(identifier("x")),
+                            span: span(),
+                        }
+                    ]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains("cannot assign")),
+            "expected assignment diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_integer_binary_expression() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![Stmt::Return {
+                        value: Some(binary(BinaryOp::Add, int(2), int(3))),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_ok(), "expected successful analysis: {result:?}");
+    }
+
+    #[test]
+    fn rejects_non_integer_arithmetic() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![Stmt::Return {
+                        value: Some(binary(BinaryOp::Add, string("left"), string("right"))),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains("arithmetic")),
+            "expected arithmetic diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyzes_boolean_condition() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![Stmt::If {
+                        condition: boolean(true),
+                        then_block: Box::new(
+                            block(
+                                vec![Stmt::Return {
+                                    value: Some(int(1)),
+                                    span: span(),
+                                }]
+                            )
+                        ),
+                        else_block: Some(
+                            Box::new(
+                                block(
+                                    vec![Stmt::Return {
+                                        value: Some(int(2)),
+                                        span: span(),
+                                    }]
+                                )
+                            )
+                        ),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_ok(), "expected successful analysis: {result:?}");
+    }
+
+    #[test]
+    fn rejects_non_boolean_condition() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Int,
+                    vec![Stmt::If {
+                        condition: int(1),
+                        then_block: Box::new(
+                            block(
+                                vec![Stmt::Return {
+                                    value: Some(int(1)),
+                                    span: span(),
+                                }]
+                            )
+                        ),
+                        else_block: None,
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains("condition")),
+            "expected condition diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_break_outside_loop() {
+        let program = program(
+            vec![function("main", TypeName::Void, vec![Stmt::Break { span: span() }])]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains("break")),
+            "expected break diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_continue_outside_loop() {
+        let program = program(
+            vec![function("main", TypeName::Void, vec![Stmt::Continue { span: span() }])]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains("continue")),
+            "expected continue diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn allows_break_inside_loop() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Void,
+                    vec![Stmt::While {
+                        condition: boolean(true),
+                        body: Box::new(block(vec![Stmt::Break { span: span() }])),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_ok(), "expected successful analysis: {result:?}");
+    }
+
+    #[test]
+    fn analyzes_equality_expression() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Bool,
+                    vec![Stmt::Return {
+                        value: Some(binary(BinaryOp::Equal, int(1), int(1))),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_ok(), "expected successful analysis: {result:?}");
+    }
+
+    #[test]
+    fn rejects_equality_between_different_types() {
+        let program = program(
+            vec![
+                function(
+                    "main",
+                    TypeName::Bool,
+                    vec![Stmt::Return {
+                        value: Some(binary(BinaryOp::Equal, int(1), string("one"))),
+                        span: span(),
+                    }]
+                )
+            ]
+        );
+
+        let result = analyze(program);
+
+        assert!(result.is_err(), "expected equality between different types to fail");
+    }
+}
