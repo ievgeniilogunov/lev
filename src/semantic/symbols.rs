@@ -138,12 +138,4 @@ impl SymbolTable {
     ) -> &FunctionSymbol {
         &self.functions[id.0]
     }
-
-    pub fn structs(&self) -> &[StructSymbol] {
-        &self.structs
-    }
-
-    pub fn functions(&self) -> &[FunctionSymbol] {
-        &self.functions
-    }
 }

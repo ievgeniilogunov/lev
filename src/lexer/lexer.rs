@@ -213,6 +213,7 @@ impl<'a> Lexer<'a> {
             "struct" => TokenKind::Struct,
             "fn" => TokenKind::Fn,
             "let" => TokenKind::Let,
+            "const" => TokenKind::Const,
             "return" => TokenKind::Return,
 
             "true" => TokenKind::True,

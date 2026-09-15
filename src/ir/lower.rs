@@ -183,6 +183,15 @@ impl FunctionBuilder {
                 }
             }
 
+            HirStmt::Const { local, value } => {
+                if let Some(value) = self.lower_expr(value) {
+                    self.emit(IrInstruction::StoreLocal {
+                        local: *local,
+                        value,
+                    });
+                }
+            }
+            
             HirStmt::Assign { local, value } => {
                 if let Some(value) = self.lower_expr(value) {
                     self.emit(IrInstruction::StoreLocal {

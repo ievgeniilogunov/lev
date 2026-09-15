@@ -1,14 +1,11 @@
 use std::collections::HashMap;
 
-use super::{
-    symbols::LocalId,
-    types::Type,
-};
+use super::{ symbols::LocalId, types::Type };
 
 #[derive(Debug, Default)]
 pub struct Scope {
     scopes: Vec<HashMap<String, LocalId>>,
-    locals: Vec<(LocalId, String, Type)>,
+    locals: Vec<(LocalId, String, Type, bool)>,
 }
 
 impl Scope {
@@ -19,21 +16,13 @@ impl Scope {
         }
     }
 
-    pub fn declare(
-        &mut self,
-        name: String,
-        ty: Type,
-    ) -> Result<LocalId, String> {
-        let current_scope = self
-            .scopes
+    pub fn declare(&mut self, name: String, ty: Type, mutable: bool) -> Result<LocalId, String> {
+        let current_scope = self.scopes
             .last_mut()
             .expect("scope stack must always contain a root scope");
 
         if current_scope.contains_key(&name) {
-            return Err(format!(
-                "variable '{}' is already declared in this scope",
-                name
-            ));
+            return Err(format!("variable '{}' is already declared in this scope", name));
         }
 
         /*
@@ -48,7 +37,7 @@ impl Scope {
 
         current_scope.insert(name.clone(), id);
 
-        self.locals.push((id, name, ty));
+        self.locals.push((id, name, ty, mutable));
 
         Ok(id)
     }
@@ -75,12 +64,10 @@ impl Scope {
     }
 
     pub fn type_of(&self, id: LocalId) -> Option<&Type> {
-        self.locals
-            .get(id.0)
-            .map(|(_, _, ty)| ty)
+        self.locals.get(id.0).map(|(_, _, ty, _)| ty)
     }
 
-    pub fn locals(&self) -> &[(LocalId, String, Type)] {
+    pub fn locals(&self) -> &[(LocalId, String, Type, bool)] {
         &self.locals
     }
 
@@ -98,5 +85,9 @@ impl Scope {
         if self.scopes.len() > 1 {
             self.scopes.pop();
         }
+    }
+
+    pub fn is_mutable(&self, id: LocalId) -> bool {
+        self.locals.get(id.0).map_or_default(|(_, _, _, mutable)| *mutable)
     }
 }

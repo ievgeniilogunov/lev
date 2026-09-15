@@ -209,7 +209,7 @@ impl Analyzer {
         let mut params = Vec::new();
 
         for parameter in &symbol.parameters {
-            match scope.declare(parameter.name.clone(), parameter.ty.clone()) {
+            match scope.declare(parameter.name.clone(), parameter.ty.clone(), true) {
                 Ok(local) => {
                     params.push(HirParam {
                         local,
@@ -239,8 +239,8 @@ impl Analyzer {
         let locals = scope
             .locals()
             .iter()
-            .filter(|(id, _, _)| { !params.iter().any(|param| param.local == *id) })
-            .map(|(id, name, ty)| HirLocal {
+            .filter(|(id, _, _, _)| { !params.iter().any(|param| param.local == *id) })
+            .map(|(id, name, ty, _)| HirLocal {
                 id: *id,
                 name: name.clone(),
                 ty: ty.clone(),
@@ -321,6 +321,17 @@ impl Analyzer {
                     }
                 };
 
+                if !scope.is_mutable(local) {
+                    return Err(
+                        vec![
+                            Diagnostic::at(
+                                format!("cannot assign to immutable variable '{}'", name),
+                                *span
+                            )
+                        ]
+                    );
+                }
+
                 let expected = match scope.type_of(local) {
                     Some(ty) => ty.clone(),
 
@@ -389,7 +400,7 @@ impl Analyzer {
                     );
                 }
 
-                let local = match scope.declare(name.clone(), declared_type) {
+                let local = match scope.declare(name.clone(), declared_type, true) {
                     Ok(local) => local,
 
                     Err(error) => {
@@ -537,6 +548,51 @@ impl Analyzer {
                 }
 
                 Ok(HirStmt::Continue)
+            }
+
+            Stmt::Const { name, ty, value, span } => {
+                let declared_type = match self.resolve_type(ty, *span) {
+                    Some(ty) => ty,
+
+                    None => {
+                        return Err(
+                            vec![
+                                Diagnostic::at(
+                                    "cannot determine type of variable declaration",
+                                    *span
+                                )
+                            ]
+                        );
+                    }
+                };
+
+                let value = self.analyze_expr(value, scope);
+
+                if value.ty != declared_type {
+                    return Err(
+                        vec![
+                            Diagnostic::at(
+                                format!(
+                                    "cannot initialize variable '{}' of type {:?} with value of type {:?}",
+                                    name,
+                                    declared_type,
+                                    value.ty
+                                ),
+                                *span
+                            )
+                        ]
+                    );
+                }
+
+                let local = match scope.declare(name.clone(), declared_type, false) {
+                    Ok(local) => local,
+
+                    Err(error) => {
+                        return Err(vec![Diagnostic::at(error, *span)]);
+                    }
+                };
+
+                Ok(HirStmt::Const { local, value })
             }
         }
     }

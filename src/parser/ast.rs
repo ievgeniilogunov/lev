@@ -75,6 +75,13 @@ pub enum Stmt {
         span: Span,
     },
 
+     Const {
+        name: String,
+        ty: TypeName,
+        value: Expr,
+        span: Span,
+    },
+
     Return {
         value: Option<Expr>,
         span: Span,
@@ -118,6 +125,7 @@ impl Stmt {
             | Stmt::If { span, .. }
             | Stmt::While { span, .. }
             | Stmt::Break { span }
+            |Stmt::Const { span, .. }
             | Stmt::Continue { span } => *span,
         }
     }

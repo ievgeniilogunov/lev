@@ -70,6 +70,11 @@ pub enum HirStmt {
         value: HirExpr,
     },
 
+    Const {
+        local: LocalId,
+        value: HirExpr,
+    },
+
     Return {
         value: Option<HirExpr>,
     },

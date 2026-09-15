@@ -3,7 +3,6 @@ use crate::compiler::source::Span;
 
 use super::ast::{
     BinaryOp,
-    Block,
     Expr,
     FieldDecl,
     FunctionDecl,
@@ -174,6 +173,10 @@ impl<'a> Parser<'a> {
             return self.parse_let_statement();
         }
 
+        if self.check(&TokenKind::Const) {
+            return self.parse_const_statement();
+        }
+
         if self.check(&TokenKind::Return) {
             return self.parse_return_statement();
         }
@@ -255,6 +258,31 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Semicolon, "expected ';' after variable declaration")?;
 
         Ok(Stmt::Let {
+            name,
+            ty,
+            value,
+            span: Span::new(start, self.previous_span().end),
+        })
+    }
+
+    fn parse_const_statement(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.current_span().start;
+
+        self.expect(&TokenKind::Const, "expected 'const'")?;
+
+        let name = self.expect_identifier("expected variable name")?;
+
+        self.expect(&TokenKind::Colon, "expected ':' after variable name")?;
+
+        let ty = self.parse_type()?;
+
+        self.expect(&TokenKind::Equal, "expected '=' in variable declaration")?;
+
+        let value = self.parse_expression()?;
+
+        self.expect(&TokenKind::Semicolon, "expected ';' after variable declaration")?;
+
+        Ok(Stmt::Const {
             name,
             ty,
             value,
