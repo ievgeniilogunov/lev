@@ -1,5 +1,10 @@
-#[derive(Debug, Clone)]
+use miette::{Diagnostic};
+use thiserror::Error;
+
+#[derive(Debug, Clone, Diagnostic, Error)]
+#[error("Unexpected src '{text}'")]
 pub struct SourceFile {
+    #[source_code]
     pub text: String,
 }
 

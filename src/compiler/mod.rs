@@ -14,7 +14,7 @@ pub fn compile(
     source: &str,
 ) -> Result<ir::IrProgram, Vec<Diagnostic>> {
     let source_file =
-        source::SourceFile::new(source);
+        source::SourceFile::new( source);
 
     let tokens =
         lexer::lex(&source_file)?;
