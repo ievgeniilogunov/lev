@@ -191,10 +191,13 @@ impl<'a> Validator<'a> {
                     | IrInstruction::StoreLocal { local, .. }
                     | IrInstruction::Parameter { local, .. }
                     | IrInstruction::Phi { local, .. } => {
-                        if !locals.contains(local) {
-                            self.error(
-                                format!("function '{}': unknown local {}", function.name, local.0)
-                            );
+                        match !locals.contains(local) {
+                            true => {
+                                self.error(
+                                    format!("function '{}': unknown local {}", function.name, local.0)
+                                );
+                            }
+                            false => (),
                         }
                     }
 
@@ -212,16 +215,14 @@ impl<'a> Validator<'a> {
 
         for block in &function.blocks {
             for instruction in &block.instructions {
-                if let IrInstruction::Call { function: target, .. } = instruction {
-                    if !functions.contains(target) {
-                        self.error(
-                            format!(
-                                "function '{}': call references unknown function #{}",
-                                function.name,
-                                target.0
-                            )
-                        );
-                    }
+                if let IrInstruction::Call { function: target, .. } = instruction && !functions.contains(target) {
+                    self.error(
+                        format!(
+                            "function '{}': call references unknown function #{}",
+                            function.name,
+                            target.0
+                        )
+                    );
                 }
             }
         }
@@ -262,16 +263,14 @@ impl<'a> Validator<'a> {
             }
 
             for instruction in &block.instructions {
-                if let Some(destination) = instruction_destination(instruction) {
-                    if definitions.insert(destination, block.id).is_some() {
-                        self.error(
-                            format!(
-                                "function '{}': value %{} is defined more than once",
-                                function.name,
-                                destination.0
-                            )
-                        );
-                    }
+                if let Some(destination) = instruction_destination(instruction) && definitions.insert(destination, block.id).is_some() {
+                    self.error(
+                        format!(
+                            "function '{}': value %{} is defined more than once",
+                            function.name,
+                            destination.0
+                        )
+                    );
                 }
             }
         }
@@ -495,15 +494,13 @@ impl<'a> Validator<'a> {
                 );
             }
 
-            if block.id == function.entry {
-                if dominators.len() != 1 || !dominators.contains(&function.entry) {
-                    self.error(
-                        format!(
-                            "function '{}': entry block has invalid dominator set",
-                            function.name
-                        )
-                    );
-                }
+            if block.id == function.entry && (dominators.len() != 1 || !dominators.contains(&function.entry)) {
+                self.error(
+                    format!(
+                        "function '{}': entry block has invalid dominator set",
+                        function.name
+                    )
+                );
             }
         }
     }

@@ -37,7 +37,7 @@ fn main() {
         }
     };
 
-    // println!("{}", program);
+    println!("{}", program);
 
     match codegen::generate(&program, CodegenTarget::X86_64MacOS) {
         Ok(assembly) => {

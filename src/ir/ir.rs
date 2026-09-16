@@ -1,13 +1,6 @@
-use std::{
-    collections::HashSet,
-    fmt,
-};
+use std::{ collections::HashSet, fmt };
 
-use crate::semantic::symbols::{
-    FunctionId,
-    LocalId,
-    StructId,
-};
+use crate::semantic::symbols::{ FunctionId, LocalId, StructId };
 
 use crate::semantic::types::Type;
 
@@ -34,6 +27,7 @@ pub struct IrField {
 pub struct IrFunction {
     pub id: FunctionId,
     pub name: String,
+    pub owner: Option<StructId>,
     pub parameters: Vec<IrLocal>,
     pub locals: Vec<IrLocal>,
     pub return_type: IrType,
@@ -181,11 +175,7 @@ impl IrFunction {
         match &block.terminator {
             Terminator::Jump(target) => vec![*target],
 
-            Terminator::Branch {
-                then_block,
-                else_block,
-                ..
-            } => {
+            Terminator::Branch { then_block, else_block, .. } => {
                 if then_block == else_block {
                     vec![*then_block]
                 } else {
@@ -193,9 +183,7 @@ impl IrFunction {
                 }
             }
 
-            Terminator::Return { .. } | Terminator::Unreachable => {
-                Vec::new()
-            }
+            Terminator::Return { .. } | Terminator::Unreachable => { Vec::new() }
         }
     }
 
@@ -232,39 +220,39 @@ impl IrFunction {
 impl fmt::Display for IrProgram {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for structure in &self.structs {
-            writeln!(
-                f,
-                "struct #{} {} {{",
-                structure.id.0,
-                structure.name
-            )?;
+            writeln!(f, "struct #{} {} {{", structure.id.0, structure.name)?;
 
             for field in &structure.fields {
-                writeln!(
-                    f,
-                    "  {}: {:?};",
-                    field.name,
-                    field.ty
-                )?;
+                writeln!(f, "  {}: {:?};", field.name, field.ty)?;
             }
 
             writeln!(f, "}}")?;
         }
 
         for function in &self.functions {
-            writeln!(
-                f,
-                "fn #{} {}: {:?} {{",
-                function.id.0,
-                function.name,
-                function.return_type
-            )?;
+            match function.owner {
+                Some(owner) => {
+                    writeln!(
+                        f,
+                        "fn #{} {}::{}: {:?} {{",
+                        function.id.0,
+                        owner.0,
+                        function.name,
+                        function.return_type
+                    )?;
+                }
+                None => {
+                    writeln!(
+                        f,
+                        "fn #{} {}: {:?} {{",
+                        function.id.0,
+                        function.name,
+                        function.return_type
+                    )?;
+                }
+            }
 
-            writeln!(
-                f,
-                "  entry: block {}",
-                function.entry.0
-            )?;
+            writeln!(f, "  entry: block {}", function.entry.0)?;
 
             for block in &function.blocks {
                 writeln!(f, "  block {}:", block.id.0)?;
@@ -273,11 +261,7 @@ impl fmt::Display for IrProgram {
                     writeln!(f, "    {:?}", instruction)?;
                 }
 
-                writeln!(
-                    f,
-                    "    {:?}",
-                    block.terminator
-                )?;
+                writeln!(f, "    {:?}", block.terminator)?;
             }
 
             writeln!(f, "}}")?;

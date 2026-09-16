@@ -73,6 +73,7 @@ fn lower_function(function: &HirFunction) -> IrFunction {
     IrFunction {
         id: function.id,
         name: function.name.clone(),
+        owner: function.owner,
         parameters,
         locals,
         return_type: IrType::from(&function.return_type),

@@ -71,23 +71,16 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::LeftBrace, "expected '{'")?;
 
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
 
         while !self.check(&TokenKind::RightBrace) && !self.check(&TokenKind::Eof) {
-            let field_start = self.current_span().start;
-
-            let field_name = self.expect_identifier("expected field name")?;
-
-            self.expect(&TokenKind::Colon, "expected ':' after field name")?;
-
-            let ty = self.parse_type()?;
-
-            self.expect(&TokenKind::Semicolon, "expected ';' after field")?;
-
-            fields.push(FieldDecl {
-                name: field_name,
-                ty,
-                span: Span::new(field_start, self.previous_span().end),
-            });
+            if self.check(&TokenKind::Fn) {
+                let method = self.parse_function()?;
+                methods.push(method);
+            } else {
+                let field = self.parse_struct_field()?;
+                fields.push(field);
+            }
         }
 
         self.expect(&TokenKind::RightBrace, "expected '}'")?;
@@ -95,8 +88,24 @@ impl<'a> Parser<'a> {
         Ok(StructDecl {
             name,
             fields,
+            methods,
             span: Span::new(start, self.previous_span().end),
         })
+    }
+
+    fn parse_struct_field(&mut self) -> Result<FieldDecl, Diagnostic> {
+        let start = self.current_span().start;
+        let name = self.expect_identifier("expected field name")?;
+
+        self.expect(&TokenKind::Colon, "expected ':' after field name")?;
+
+        let ty = self.parse_type()?;
+
+        self.expect(&TokenKind::Semicolon, "expected ';' after field declaration")?;
+
+        let end = self.previous_span().end;
+
+        Ok(FieldDecl { name, ty, span: Span::new(start, end) })
     }
 
     fn parse_function(&mut self) -> Result<FunctionDecl, Diagnostic> {
@@ -347,11 +356,11 @@ impl<'a> Parser<'a> {
         };
 
         Ok(Stmt::If {
-        condition,
-        then_block: Box::new(then_block),
-        else_block: else_block.map(Box::new),
-        span: Span::new(start, self.previous_span().end),
-    })
+            condition,
+            then_block: Box::new(then_block),
+            else_block: else_block.map(Box::new),
+            span: Span::new(start, self.previous_span().end),
+        })
     }
 
     fn parse_while_statement(&mut self) -> Result<Stmt, Diagnostic> {
@@ -367,11 +376,11 @@ impl<'a> Parser<'a> {
 
         let body = self.parse_block()?;
 
-       Ok(Stmt::While {
-        condition,
-        body: Box::new(body),
-        span: Span::new(start, self.previous_span().end),
-    })
+        Ok(Stmt::While {
+            condition,
+            body: Box::new(body),
+            span: Span::new(start, self.previous_span().end),
+        })
     }
 
     fn parse_type(&mut self) -> Result<TypeName, Diagnostic> {

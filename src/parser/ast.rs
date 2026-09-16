@@ -16,6 +16,7 @@ pub enum Item {
 pub struct StructDecl {
     pub name: String,
     pub fields: Vec<FieldDecl>,
+    pub methods: Vec<FunctionDecl>,
     pub span: Span,
 }
 

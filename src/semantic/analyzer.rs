@@ -17,7 +17,7 @@ pub fn analyze(program: Program) -> Result<HirProgram, Vec<Diagnostic>> {
         return Err(analyzer.errors);
     }
 
-    let hir = analyzer.analyze_program(&program);
+    let hir = analyzer.analyze_program(program);
 
     if analyzer.errors.is_empty() {
         Ok(hir)
@@ -53,41 +53,47 @@ impl Analyzer {
 
     fn collect_function_signatures(&mut self, program: &Program) {
         for function in &program.functions {
-            let mut parameters = Vec::new();
-            let mut seen_parameters = HashSet::new();
+            self.collect_function_signature(function, None);
+        }
 
-            for parameter in &function.params {
-                if !seen_parameters.insert(parameter.name.clone()) {
-                    self.errors.push(
-                        Diagnostic::at(
-                            format!("parameter '{}' is duplicated", parameter.name),
-                            parameter.span
-                        )
-                    );
-                    continue;
-                }
-
-                if let Some(ty) = self.resolve_type(&parameter.ty, parameter.span) {
-                    parameters.push(ParameterSymbol {
-                        name: parameter.name.clone(),
-                        ty,
-                    });
-                }
+        // Register methods declared inside structs.
+        for struct_decl in &program.structs {
+            let Some(struct_id) = self.symbols.find_struct(&struct_decl.name) else {
+                continue;
+            };
+            for method in &struct_decl.methods {
+                self.collect_function_signature(method, Some(struct_id));
             }
+        }
+    }
 
-            let return_type = self
-                .resolve_type(&function.return_type, function.span)
-                .unwrap_or(Type::Void);
-
-            if
-                let Err(error) = self.symbols.add_function(
-                    function.name.clone(),
-                    parameters,
-                    return_type
-                )
-            {
-                self.errors.push(Diagnostic::at(error, function.span));
+    fn collect_function_signature(&mut self, function: &FunctionDecl, owner: Option<StructId>) {
+        let mut parameters = Vec::new();
+        let mut seen_parameters = HashSet::new();
+        for parameter in &function.params {
+            if !seen_parameters.insert(parameter.name.clone()) {
+                self.errors.push(
+                    Diagnostic::at(
+                        format!("parameter '{}' is duplicated", parameter.name),
+                        parameter.span
+                    )
+                );
+                continue;
             }
+            if let Some(ty) = self.resolve_type(&parameter.ty, parameter.span) {
+                parameters.push(ParameterSymbol { name: parameter.name.clone(), ty });
+            }
+        }
+        let return_type = self
+            .resolve_type(&function.return_type, function.span)
+            .unwrap_or(Type::Void);
+        let result = match owner {
+            Some(struct_id) =>
+                self.symbols.add_method(struct_id, function.name.clone(), parameters, return_type),
+            None => self.symbols.add_function(function.name.clone(), parameters, return_type),
+        };
+        if let Err(error) = result {
+            self.errors.push(Diagnostic::at(error, function.span));
         }
     }
 
@@ -154,17 +160,18 @@ impl Analyzer {
     // Program
     // ---------------------------------------------------------------------
 
-    fn analyze_program(&mut self, program: &Program) -> HirProgram {
-        let mut structs = Vec::new();
+    fn analyze_program(&mut self, program: Program) -> HirProgram {
+        let mut hir_structs = Vec::new();
+        let mut hir_functions = Vec::new();
 
-        for structure in &program.structs {
-            let Some(id) = self.symbols.find_struct(&structure.name) else {
+        for struct_decl in &program.structs {
+            let Some(struct_id) = self.symbols.find_struct(&struct_decl.name) else {
                 continue;
             };
 
-            let symbol = self.symbols.struct_symbol(id);
+            let struct_symbol = self.symbols.struct_symbol(struct_id);
 
-            let fields = symbol.fields
+            let fields = struct_symbol.fields
                 .iter()
                 .map(|field| HirField {
                     name: field.name.clone(),
@@ -172,26 +179,34 @@ impl Analyzer {
                 })
                 .collect();
 
-            structs.push(HirStruct {
-                id,
-                name: structure.name.clone(),
+            hir_structs.push(HirStruct {
+                id: struct_id,
+                name: struct_symbol.name.clone(),
                 fields,
             });
+
+            for method in &struct_decl.methods {
+                let Some(function_id) = self.symbols.find_method(struct_id, &method.name) else {
+                    continue;
+                };
+
+                let hir_function = self.analyze_function(method, function_id);
+                hir_functions.push(hir_function);
+            }
         }
 
-        let mut functions = Vec::new();
-
         for function in &program.functions {
-            let Some(id) = self.symbols.find_function(&function.name) else {
+            let Some(function_id) = self.symbols.find_function(&function.name) else {
                 continue;
             };
 
-            functions.push(self.analyze_function(function, id));
+            let hir_function = self.analyze_function(function, function_id);
+            hir_functions.push(hir_function);
         }
 
         HirProgram {
-            structs,
-            functions,
+            structs: hir_structs,
+            functions: hir_functions,
         }
     }
 
@@ -250,6 +265,7 @@ impl Analyzer {
         HirFunction {
             id: function_id,
             name: symbol.name,
+            owner: symbol.owner,
             params,
             locals,
             return_type: symbol.return_type,

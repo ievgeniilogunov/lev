@@ -1,6 +1,10 @@
 struct Person {
     name: string;
     age: int;
+
+    fn describe(): string {
+        return "Person";
+    }
 }
 
 fn add(a: int, b: int): int {

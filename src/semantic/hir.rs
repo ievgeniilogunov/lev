@@ -25,19 +25,17 @@ pub struct HirField {
     pub ty: Type,
 }
 
-#[derive(Debug)]
-pub struct HirFunction {
-    pub id: FunctionId,
-    pub name: String,
-
-    pub params: Vec<HirParam>,
-
-    pub locals: Vec<HirLocal>,
-
-    pub return_type: Type,
-
+#[derive(Debug)] pub struct HirFunction { 
+    pub id: FunctionId, 
+    pub name: String, 
+    // None for top-level functions. 
+    // Some(struct_id) for struct methods. 
+    pub owner: Option<StructId>, 
+    pub params: Vec<HirParam>, 
+    pub locals: Vec<HirLocal>, 
+    pub return_type: Type, 
     pub body: HirBlock,
-}
+ }
 
 #[derive(Debug)]
 pub struct HirParam {
