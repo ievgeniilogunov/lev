@@ -220,8 +220,25 @@ impl Analyzer {
     ) -> HirFunction {
         let symbol = self.symbols.function_symbol(function_id).clone();
         let mut scope = Scope::new();
-
         let mut params = Vec::new();
+
+        if let Some(owner) = symbol.owner {
+            let receiver_name = "self".to_string();
+            let receiver_type = Type::Struct(owner);
+
+            match scope.declare(receiver_name.clone(), receiver_type.clone(), true) {
+                Ok(local) => {
+                    params.push(HirParam {
+                        local,
+                        name: receiver_name,
+                        ty: receiver_type,
+                    });
+                }
+                Err(error) => {
+                    self.errors.push(Diagnostic::at(error, function.span));
+                }
+            }
+        }
 
         for parameter in &symbol.parameters {
             match scope.declare(parameter.name.clone(), parameter.ty.clone(), true) {
@@ -232,7 +249,6 @@ impl Analyzer {
                         ty: parameter.ty.clone(),
                     });
                 }
-
                 Err(error) => {
                     self.errors.push(Diagnostic::at(error, function.span));
                 }
@@ -753,68 +769,164 @@ impl Analyzer {
                 }
             }
 
-            Expr::Call { name, arguments, span } => {
-                let Some(function_id) = self.symbols.find_function(name) else {
-                    self.errors.push(Diagnostic::at(format!("unknown function '{}'", name), *span));
+            Expr::Call { receiver, name, arguments, span } => {
+                if let Some(receiver_expression) = receiver {
+                    let analyzed_receiver = self.analyze_expr(receiver_expression, scope);
 
-                    return HirExpr {
-                        kind: HirExprKind::Integer(0),
-                        ty: Type::Int,
-                        span: *span,
+                    let Type::Struct(struct_id) = analyzed_receiver.ty.clone() else {
+                        self.errors.push(
+                            Diagnostic::at(
+                                format!(
+                                    "cannot call method '{}' on value of type {:?}",
+                                    name,
+                                    analyzed_receiver.ty
+                                ),
+                                *span
+                            )
+                        );
+
+                        return HirExpr {
+                            kind: HirExprKind::Integer(0),
+                            ty: Type::Int,
+                            span: *span,
+                        };
                     };
-                };
 
-                let function = self.symbols.function_symbol(function_id).clone();
+                    let Some(method_id) = self.symbols.find_method(struct_id, name) else {
+                        self.errors.push(
+                            Diagnostic::at(
+                                format!(
+                                    "struct '{}' has no method '{}'",
+                                    self.symbols.struct_symbol(struct_id).name,
+                                    name
+                                ),
+                                *span
+                            )
+                        );
 
-                if arguments.len() != function.parameters.len() {
-                    self.errors.push(
-                        Diagnostic::at(
-                            format!(
-                                "function '{}' expects {} argument(s), found {}",
-                                name,
-                                function.parameters.len(),
-                                arguments.len()
-                            ),
-                            *span
-                        )
-                    );
-                }
+                        return HirExpr {
+                            kind: HirExprKind::Integer(0),
+                            ty: Type::Int,
+                            span: *span,
+                        };
+                    };
 
-                let analyzed_arguments: Vec<HirExpr> = arguments
-                    .iter()
-                    .enumerate()
-                    .map(|(index, argument)| {
+                    let method = self.symbols.function_symbol(method_id).clone();
+
+                    if arguments.len() != method.parameters.len() {
+                        self.errors.push(
+                            Diagnostic::at(
+                                format!(
+                                    "method '{}.{}' expects {} argument(s), found {}",
+                                    self.symbols.struct_symbol(struct_id).name,
+                                    name,
+                                    method.parameters.len(),
+                                    arguments.len()
+                                ),
+                                *span
+                            )
+                        );
+                    }
+
+                    let mut analyzed_arguments = Vec::with_capacity(arguments.len() + 1);
+
+                    // The receiver is passed as the first argument.
+                    analyzed_arguments.push(analyzed_receiver);
+
+                    for (index, argument) in arguments.iter().enumerate() {
                         let value = self.analyze_expr(argument, scope);
 
-                        if
-                            let Some(parameter) = function.parameters.get(index) &&
-                            value.ty != parameter.ty
-                        {
-                            self.errors.push(
-                                Diagnostic::at(
-                                    format!(
-                                        "argument {} of '{}' has type {:?}, expected {:?}",
-                                        index + 1,
-                                        name,
-                                        value.ty,
-                                        parameter.ty
-                                    ),
-                                    value.span
-                                )
-                            );
+                        if let Some(parameter) = method.parameters.get(index) {
+                            if value.ty != parameter.ty {
+                                self.errors.push(
+                                    Diagnostic::at(
+                                        format!(
+                                            "argument {} of method '{}.{}' has type {:?}, expected {:?}",
+                                            index + 1,
+                                            self.symbols.struct_symbol(struct_id).name,
+                                            name,
+                                            value.ty,
+                                            parameter.ty
+                                        ),
+                                        value.span
+                                    )
+                                );
+                            }
                         }
 
-                        value
-                    })
-                    .collect();
+                        analyzed_arguments.push(value);
+                    }
 
-                HirExpr {
-                    kind: HirExprKind::Call {
-                        function: function_id,
-                        arguments: analyzed_arguments,
-                    },
-                    ty: function.return_type,
-                    span: *span,
+                    HirExpr {
+                        kind: HirExprKind::Call {
+                            function: method_id,
+                            arguments: analyzed_arguments,
+                        },
+                        ty: method.return_type,
+                        span: *span,
+                    }
+                } else {
+                    let Some(function_id) = self.symbols.find_function(name) else {
+                        self.errors.push(
+                            Diagnostic::at(format!("unknown function '{}'", name), *span)
+                        );
+
+                        return HirExpr {
+                            kind: HirExprKind::Integer(0),
+                            ty: Type::Int,
+                            span: *span,
+                        };
+                    };
+
+                    let function = self.symbols.function_symbol(function_id).clone();
+
+                    if arguments.len() != function.parameters.len() {
+                        self.errors.push(
+                            Diagnostic::at(
+                                format!(
+                                    "function '{}' expects {} argument(s), found {}",
+                                    name,
+                                    function.parameters.len(),
+                                    arguments.len()
+                                ),
+                                *span
+                            )
+                        );
+                    }
+
+                    let mut analyzed_arguments = Vec::with_capacity(arguments.len());
+
+                    for (index, argument) in arguments.iter().enumerate() {
+                        let value = self.analyze_expr(argument, scope);
+
+                        if let Some(parameter) = function.parameters.get(index) {
+                            if value.ty != parameter.ty {
+                                self.errors.push(
+                                    Diagnostic::at(
+                                        format!(
+                                            "argument {} of '{}' has type {:?}, expected {:?}",
+                                            index + 1,
+                                            name,
+                                            value.ty,
+                                            parameter.ty
+                                        ),
+                                        value.span
+                                    )
+                                );
+                            }
+                        }
+
+                        analyzed_arguments.push(value);
+                    }
+
+                    HirExpr {
+                        kind: HirExprKind::Call {
+                            function: function_id,
+                            arguments: analyzed_arguments,
+                        },
+                        ty: function.return_type,
+                        span: *span,
+                    }
                 }
             }
         }

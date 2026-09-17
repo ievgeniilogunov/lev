@@ -386,11 +386,16 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) -> Result<TypeName, Diagnostic> {
         let token = self.advance();
 
-        match &token.kind {
+        match token.kind {
             TokenKind::Int => Ok(TypeName::Int),
+
             TokenKind::StringType => Ok(TypeName::String),
+
             TokenKind::Bool => Ok(TypeName::Bool),
+
             TokenKind::Void => Ok(TypeName::Void),
+
+            TokenKind::Identifier(name) => Ok(TypeName::Named(name)),
 
             _ => Err(Diagnostic::at("expected type", token.span)),
         }
@@ -510,32 +515,38 @@ impl<'a> Parser<'a> {
                 }),
 
             TokenKind::Identifier(name) => {
+                let identifier = Expr::Identifier {
+                    name: name.clone(),
+                    span: token.span,
+                };
+
                 if self.consume(&TokenKind::LeftParen) {
-                    let mut arguments = Vec::new();
+                    let arguments = self.parse_call_arguments()?;
 
-                    if !self.check(&TokenKind::RightParen) {
-                        loop {
-                            arguments.push(self.parse_expression()?);
-
-                            if !self.consume(&TokenKind::Comma) {
-                                break;
-                            }
-                        }
-                    }
-
-                    self.expect(&TokenKind::RightParen, "expected ')' after arguments")?;
-
-                    Ok(Expr::Call {
+                    return Ok(Expr::Call {
+                        receiver: None,
                         name,
                         arguments,
                         span: Span::new(token.span.start, self.previous_span().end),
-                    })
-                } else {
-                    Ok(Expr::Identifier {
-                        name,
-                        span: token.span,
-                    })
+                    });
                 }
+
+                if self.consume(&TokenKind::Dot) {
+                    let method_name = self.expect_identifier("expected method name after '.'")?;
+
+                    self.expect(&TokenKind::LeftParen, "expected '(' after method name")?;
+
+                    let arguments = self.parse_call_arguments()?;
+
+                    return Ok(Expr::Call {
+                        receiver: Some(Box::new(identifier)),
+                        name: method_name,
+                        arguments,
+                        span: Span::new(token.span.start, self.previous_span().end),
+                    });
+                }
+
+                Ok(identifier)
             }
 
             TokenKind::LeftParen => {
@@ -548,6 +559,24 @@ impl<'a> Parser<'a> {
 
             _ => Err(Diagnostic::at("expected expression", token.span)),
         }
+    }
+
+    fn parse_call_arguments(&mut self) -> Result<Vec<Expr>, Diagnostic> {
+        let mut arguments = Vec::new();
+
+        if !self.check(&TokenKind::RightParen) {
+            loop {
+                arguments.push(self.parse_expression()?);
+
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RightParen, "expected ')' after arguments")?;
+
+        Ok(arguments)
     }
 
     fn is_assignment_statement(&self) -> bool {

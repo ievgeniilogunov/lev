@@ -65,8 +65,8 @@ pub enum Stmt {
     },
 
     Block {
-      statements: Vec<Stmt>,
-      span: Span,
+        statements: Vec<Stmt>,
+        span: Span,
     },
 
     Let {
@@ -76,7 +76,7 @@ pub enum Stmt {
         span: Span,
     },
 
-     Const {
+    Const {
         name: String,
         ty: TypeName,
         value: Expr,
@@ -118,7 +118,7 @@ pub enum Stmt {
 impl Stmt {
     pub fn span(&self) -> Span {
         match self {
-            Stmt::Block { span, .. }
+            | Stmt::Block { span, .. }
             | Stmt::Let { span, .. }
             | Stmt::Assign { span, .. }
             | Stmt::Return { span, .. }
@@ -126,7 +126,7 @@ impl Stmt {
             | Stmt::If { span, .. }
             | Stmt::While { span, .. }
             | Stmt::Break { span }
-            |Stmt::Const { span, .. }
+            | Stmt::Const { span, .. }
             | Stmt::Continue { span } => *span,
         }
     }
@@ -162,6 +162,7 @@ pub enum Expr {
     },
 
     Call {
+        receiver: Option<Box<Expr>>,
         name: String,
         arguments: Vec<Expr>,
         span: Span,

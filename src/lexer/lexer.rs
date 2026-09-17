@@ -64,6 +64,7 @@ impl<'a> Lexer<'a> {
             ':' => self.simple(TokenKind::Colon),
             ';' => self.simple(TokenKind::Semicolon),
             ',' => self.simple(TokenKind::Comma),
+            '.' => self.simple(TokenKind::Dot),
 
             '+' => self.simple(TokenKind::Plus),
             '-' => self.simple(TokenKind::Minus),

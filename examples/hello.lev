@@ -17,3 +17,7 @@ fn main(): int {
 
     return add(x, y);
 }
+
+fn mains(person: Person): string {
+    return person.describe();
+}

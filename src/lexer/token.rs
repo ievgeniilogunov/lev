@@ -36,6 +36,7 @@ pub enum TokenKind {
     Colon,
     Semicolon,
     Comma,
+    Dot,
 
     Plus,
     Minus,
