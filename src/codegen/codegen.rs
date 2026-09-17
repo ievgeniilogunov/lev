@@ -1,4 +1,4 @@
-use std::collections::{ HashMap, HashSet };
+use std::collections::{ BTreeMap, HashMap, HashSet };
 use std::fmt::Write;
 
 use crate::ir::ir::{
@@ -25,16 +25,95 @@ pub fn generate(program: &IrProgram, target: CodegenTarget) -> Result<String, St
     writeln!(output, ".intel_syntax noprefix").map_err(|e| e.to_string())?;
     writeln!(output, ".text").map_err(|e| e.to_string())?;
 
+    let string_labels = collect_string_literals(program);
+
     let function_names: HashMap<_, _> = program.functions
         .iter()
         .map(|function| (function.id, function.name.clone()))
         .collect();
 
+    emit_string_section(&mut output, &string_labels, target)?;
+
     for function in &program.functions {
-        generate_function(&mut output, function, &function_names, target)?;
+        generate_function(&mut output, function, &function_names, &string_labels, target)?;
     }
 
     Ok(output)
+}
+
+fn collect_string_literals(program: &IrProgram) -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+
+    for function in &program.functions {
+        for block in &function.blocks {
+            for instruction in &block.instructions {
+                let IrInstruction::ConstString { value, .. } = instruction else {
+                    continue;
+                };
+
+                if !labels.contains_key(value) {
+                    let label = format!(".L_string_{}", labels.len());
+                    labels.insert(value.clone(), label);
+                }
+            }
+        }
+    }
+
+    labels
+}
+
+fn emit_string_section(
+    output: &mut String,
+    string_labels: &BTreeMap<String, String>,
+    target: CodegenTarget
+) -> Result<(), String> {
+    if string_labels.is_empty() {
+        return Ok(());
+    }
+
+    match target {
+        CodegenTarget::X86_64 => {
+            writeln!(output, ".section .rodata").map_err(|e| e.to_string())?;
+        }
+
+        CodegenTarget::X86_64MacOS => {
+            writeln!(output, ".section __TEXT,__cstring").map_err(|e| e.to_string())?;
+        }
+    }
+
+    for (value, label) in string_labels {
+        writeln!(output, "{}:", label).map_err(|e| e.to_string())?;
+
+        writeln!(output, "    .asciz \"{}\"", escape_assembly_string(value)).map_err(|e|
+            e.to_string()
+        )?;
+    }
+
+    Ok(())
+}
+
+fn escape_assembly_string(value: &str) -> String {
+    let mut result = String::new();
+
+    for character in value.chars() {
+        match character {
+            '\\' => result.push_str("\\\\"),
+            '"' => result.push_str("\\\""),
+            '\n' => result.push_str("\\n"),
+            '\r' => result.push_str("\\r"),
+            '\t' => result.push_str("\\t"),
+            character if character.is_ascii_graphic() || character == ' ' => {
+                result.push(character);
+            }
+            character => {
+                for byte in character.to_string().as_bytes() {
+                    result.push_str(&format!("\\{:03o}", byte));
+                }
+            }
+        }
+    }
+
+    result
 }
 
 struct FunctionCodegen<'a> {
@@ -61,6 +140,8 @@ struct FunctionCodegen<'a> {
 
     /// One extra stack slot used when parallel phi copies form a cycle.
     phi_temp_offset: i32,
+
+    string_labels: &'a BTreeMap<String, String>,
 }
 
 impl<'a> FunctionCodegen<'a> {
@@ -68,6 +149,7 @@ impl<'a> FunctionCodegen<'a> {
         output: &'a mut String,
         function: &'a IrFunction,
         function_names: &'a HashMap<FunctionId, String>,
+        string_labels: &'a BTreeMap<String, String>,
         target: CodegenTarget
     ) -> Self {
         Self {
@@ -76,6 +158,7 @@ impl<'a> FunctionCodegen<'a> {
             value_slots: HashMap::new(),
             edge_copies: HashMap::new(),
             function_names,
+            string_labels,
             next_stack_offset: 8,
             phi_temp_offset: 0,
             target,
@@ -374,13 +457,15 @@ impl<'a> FunctionCodegen<'a> {
             }
 
             IrInstruction::ConstString { destination, value } => {
-                return Err(
-                    format!(
-                        "string code generation is not implemented yet for {:?} = {:?}",
-                        destination,
-                        value
-                    )
-                );
+                let label = self.string_labels
+                    .get(value)
+                    .ok_or_else(|| {
+                        format!("no assembly label found for string literal {:?}", value)
+                    })?;
+
+                writeln!(self.output, "    lea rax, [rip + {}]", label).map_err(|e| e.to_string())?;
+
+                self.emit_store(*destination, "rax")?;
             }
 
             IrInstruction::ConstBool { destination, value } => {
@@ -615,7 +700,8 @@ fn generate_function(
     output: &mut String,
     function: &IrFunction,
     function_names: &HashMap<FunctionId, String>,
+    string_labels: &BTreeMap<String, String>,
     target: CodegenTarget
 ) -> Result<(), String> {
-    FunctionCodegen::new(output, function, function_names, target).generate()
+    FunctionCodegen::new(output, function, function_names, string_labels, target).generate()
 }
