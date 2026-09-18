@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use miette::SourceSpan;
 
 #[derive(Debug, Clone)]
 pub struct SourceFile {
-    pub text: String,
+    pub text: Arc<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,19 +30,11 @@ impl Span {
 impl SourceFile {
     pub fn new(src_file: &str) -> Self {
         Self {
-            text: src_file.to_owned(),
+            text: Arc::new(src_file.to_owned())
         }
     }
 
     pub fn slice(&self, start: usize, end: usize) -> &str {
         &self.text[start..end]
-    }
-
-    pub fn span(&self, offset: usize, length: usize) -> SourceSpan {
-        (offset, length).into()
-    }
-
-    pub fn line(&self, offset: usize) -> usize {
-        self.text[..offset].lines().count()
     }
 }

@@ -580,6 +580,7 @@ impl<'a> FunctionCodegen<'a> {
             IrInstruction::Phi { .. } => {
                 // Phi nodes are handled by emit_edge_copies().
             }
+
             IrInstruction::LoadField { destination, receiver, field } => todo!()
         }
 

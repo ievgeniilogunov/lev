@@ -33,8 +33,4 @@ impl CompilerError {
             span: None,
         }
     }
-
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }

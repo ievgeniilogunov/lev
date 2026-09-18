@@ -344,7 +344,11 @@ impl<'a> Validator<'a> {
             IrInstruction::Phi { sources, .. } => {
                 self.validate_phi_sources(function, use_block, sources, definitions, dominance);
             }
-            IrInstruction::LoadField { destination, receiver, field } => todo!(),
+            IrInstruction::LoadField { receiver, .. } => {
+                {
+                    self.require_value(function, use_block, *receiver, definitions, dominance);
+                }
+            }
         }
     }
 

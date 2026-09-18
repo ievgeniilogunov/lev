@@ -993,7 +993,7 @@ impl<'a> Analyzer<'a> {
 mod tests {
     use super::*;
     use crate::compiler::source::Span;
-    use crate::parser::ast::{ BinaryOp, Expr, FunctionDecl, Param, Program, Stmt, TypeName };
+    use crate::parser::ast::{ BinaryOp, Expr, FunctionDecl, Program, Stmt, TypeName };
 
     fn span() -> Span {
         Span::new(0, 1)

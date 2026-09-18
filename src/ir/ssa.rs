@@ -231,7 +231,9 @@ fn rename_block(
             Some(block) => block,
             None => {
                 return Err(
-                    vec![CompilerError::internal(format!("SSA: block {:?} does not exist", block_id))]
+                    vec![
+                        CompilerError::internal(format!("SSA: block {:?} does not exist", block_id))
+                    ]
                 );
             }
         };
@@ -338,7 +340,9 @@ fn rename_block(
             IrInstruction::LoadLocal { destination, local } => {
                 let current = current_value(stacks, local).ok_or_else(|| {
                     vec![
-                        CompilerError::internal(format!("SSA: local {:?} has no current definition", local))
+                        CompilerError::internal(
+                            format!("SSA: local {:?} has no current definition", local)
+                        )
                     ]
                 })?;
 
@@ -388,7 +392,15 @@ fn rename_block(
             IrInstruction::Phi { .. } => {
                 unreachable!("Phi instructions were separated above");
             }
-            IrInstruction::LoadField { destination, receiver, field } => todo!(),
+            IrInstruction::LoadField { destination, receiver, field } => {
+                let receiver = resolve_alias(aliases, receiver);
+
+                new_instructions.push(IrInstruction::LoadField {
+                    destination,
+                    receiver,
+                    field,
+                });
+            }
         }
     }
 
@@ -520,10 +532,7 @@ fn current_value(
         .copied()
 }
 
-fn resolve_alias(
-    aliases: &HashMap<ValueId, ValueId>,
-    mut value: ValueId,
-) -> ValueId {
+fn resolve_alias(aliases: &HashMap<ValueId, ValueId>, mut value: ValueId) -> ValueId {
     let mut visited = BTreeSet::new();
 
     while let Some(next) = aliases.get(&value).copied() {
@@ -613,6 +622,6 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
         IrInstruction::StoreLocal { .. } => None,
 
         IrInstruction::Call { destination, .. } => *destination,
-        IrInstruction::LoadField { destination, receiver, field } => todo!(),
+        IrInstruction::LoadField { destination, .. } => Some(*destination),
     }
 }
