@@ -9,7 +9,9 @@ use std::{env, fs, process};
 
 use crate::codegen::CodegenTarget;
 
-fn main() {
+use miette::Report;
+
+fn main() -> miette::Result<()> {
     let path = match env::args().nth(1) {
         Some(path) => path,
         None => {
@@ -30,7 +32,7 @@ fn main() {
         Ok(program) => program,
         Err(errors) => {
             for error in errors {
-                eprintln!("error: {}", error);
+                eprintln!("{:?}", Report::new(error));
             }
 
             process::exit(1);
@@ -42,6 +44,7 @@ fn main() {
     match codegen::generate(&program, CodegenTarget::X86_64MacOS) {
         Ok(assembly) => {
             println!("{}", assembly);
+            Ok(())
         }
         Err(error) => {
             eprintln!("codegen error: {}", error);
