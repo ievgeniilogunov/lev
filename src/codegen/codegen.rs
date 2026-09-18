@@ -165,6 +165,22 @@ impl<'a> FunctionCodegen<'a> {
         }
     }
 
+    fn function_symbol_name(program: &IrProgram, function: &IrFunction) -> String {
+        match function.owner {
+            Some(owner) => {
+                let struct_name = program.structs
+                    .iter()
+                    .find(|structure| structure.id == owner)
+                    .map(|structure| structure.name.as_str())
+                    .unwrap_or("unknown");
+
+                format!("{}_{}", struct_name, function.name)
+            }
+
+            None => function.name.clone(),
+        }
+    }
+
     fn symbol_name(&self, name: &str) -> String {
         match self.target {
             CodegenTarget::X86_64 => name.to_string(),
@@ -564,6 +580,7 @@ impl<'a> FunctionCodegen<'a> {
             IrInstruction::Phi { .. } => {
                 // Phi nodes are handled by emit_edge_copies().
             }
+            IrInstruction::LoadField { destination, receiver, field } => todo!()
         }
 
         Ok(())
@@ -693,6 +710,8 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
         IrInstruction::Call { destination, .. } => { *destination }
 
         IrInstruction::Phi { destination, .. } => { Some(*destination) }
+
+        IrInstruction::LoadField { destination,.. } => { Some(*destination) }
     }
 }
 

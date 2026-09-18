@@ -154,6 +154,12 @@ pub enum Expr {
         span: Span,
     },
 
+    Member {
+        receiver: Box<Expr>,
+        name: String,
+        span: Span,
+    },
+
     Binary {
         op: BinaryOp,
         left: Box<Expr>,
@@ -167,6 +173,20 @@ pub enum Expr {
         arguments: Vec<Expr>,
         span: Span,
     },
+}
+
+impl Expr {
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Integer { span, .. }
+            | Expr::String { span, .. }
+            | Expr::Bool { span, .. }
+            | Expr::Identifier { span, .. }
+            | Expr::Member { span, .. }
+            | Expr::Binary { span, .. }
+            | Expr::Call { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

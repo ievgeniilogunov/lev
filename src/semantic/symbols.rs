@@ -83,10 +83,9 @@ impl SymbolTable {
         }
 
         let id = FunctionId(self.functions.len());
-
+        
         self.function_names.insert(name.clone(), id);
         self.functions.push(FunctionSymbol { id, name, owner: None, parameters, return_type });
-        
         Ok(id)
     }
 

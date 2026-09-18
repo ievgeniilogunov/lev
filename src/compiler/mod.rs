@@ -1,5 +1,5 @@
-pub mod diagnostics;
 pub mod source;
+pub mod error;
 
 use crate::{
     ir,
@@ -8,11 +8,11 @@ use crate::{
     semantic,
 };
 
-use diagnostics::Diagnostic;
+use error::CompilerError;
 
 pub fn compile(
     source: &str,
-) -> Result<ir::IrProgram, Vec<Diagnostic>> {
+) -> Result<ir::IrProgram, Vec<CompilerError>> {
     let source_file =
         source::SourceFile::new( source);
 
@@ -20,10 +20,10 @@ pub fn compile(
         lexer::lex(&source_file)?;
 
     let ast =
-        parser::parse(&tokens)?;
+        parser::parse(&source_file, &tokens)?;
 
     let hir =
-        semantic::analyze(ast)?;
+        semantic::analyze(ast, source_file)?;
 
     let mut ir =
         ir::lower::lower_to_ir(hir)?;

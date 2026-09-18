@@ -1,11 +1,11 @@
 use std::collections::{ BTreeMap, BTreeSet, HashMap };
 
-use crate::compiler::diagnostics::Diagnostic;
+use crate::compiler::error::CompilerError;
 
 use super::ir::{ BlockId, IrFunction, IrInstruction, IrProgram, Terminator, ValueId };
 use super::validate::DominanceInfo;
 
-pub fn construct_ssa(program: &mut IrProgram) -> Result<(), Vec<Diagnostic>> {
+pub fn construct_ssa(program: &mut IrProgram) -> Result<(), Vec<CompilerError>> {
     let mut errors = Vec::new();
 
     for function in &mut program.functions {
@@ -21,7 +21,7 @@ pub fn construct_ssa(program: &mut IrProgram) -> Result<(), Vec<Diagnostic>> {
     }
 }
 
-fn construct_function_ssa(function: &mut IrFunction) -> Result<(), Vec<Diagnostic>> {
+fn construct_function_ssa(function: &mut IrFunction) -> Result<(), Vec<CompilerError>> {
     let dominance = DominanceInfo::compute(function);
 
     insert_phi_nodes(function, &dominance);
@@ -215,7 +215,7 @@ fn rename_block(
     stacks: &mut HashMap<crate::semantic::symbols::LocalId, Vec<ValueId>>,
     aliases: &mut HashMap<ValueId, ValueId>,
     allocator: &mut ValueAllocator
-) -> Result<(), Vec<Diagnostic>> {
+) -> Result<(), Vec<CompilerError>> {
     if !function.reachable_blocks().contains(&block_id) {
         return Ok(());
     }
@@ -231,7 +231,7 @@ fn rename_block(
             Some(block) => block,
             None => {
                 return Err(
-                    vec![Diagnostic::new(format!("SSA: block {:?} does not exist", block_id))]
+                    vec![CompilerError::internal(format!("SSA: block {:?} does not exist", block_id))]
                 );
             }
         };
@@ -338,7 +338,7 @@ fn rename_block(
             IrInstruction::LoadLocal { destination, local } => {
                 let current = current_value(stacks, local).ok_or_else(|| {
                     vec![
-                        Diagnostic::new(format!("SSA: local {:?} has no current definition", local))
+                        CompilerError::internal(format!("SSA: local {:?} has no current definition", local))
                     ]
                 })?;
 
@@ -388,6 +388,7 @@ fn rename_block(
             IrInstruction::Phi { .. } => {
                 unreachable!("Phi instructions were separated above");
             }
+            IrInstruction::LoadField { destination, receiver, field } => todo!(),
         }
     }
 
@@ -457,7 +458,7 @@ fn rename_block(
         for local in successor_locals {
             let value = current_value(stacks, local).ok_or_else(|| {
                 vec![
-                    Diagnostic::new(
+                    CompilerError::internal(
                         format!(
                             "SSA: no value for local {:?} on edge {:?} -> {:?}",
                             local,
@@ -612,5 +613,6 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
         IrInstruction::StoreLocal { .. } => None,
 
         IrInstruction::Call { destination, .. } => *destination,
+        IrInstruction::LoadField { destination, receiver, field } => todo!(),
     }
 }

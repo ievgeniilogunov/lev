@@ -128,6 +128,11 @@ pub enum HirExprKind {
         function: FunctionId,
         arguments: Vec<HirExpr>,
     },
+
+    Field {
+        receiver: Box<HirExpr>,
+        field: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]

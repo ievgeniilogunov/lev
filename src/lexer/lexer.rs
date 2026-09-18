@@ -1,9 +1,8 @@
-use crate::compiler::diagnostics::Diagnostic;
-use crate::compiler::source::{SourceFile, Span};
+use crate::compiler::{ error::CompilerError, source::{ SourceFile, Span } };
 
-use super::token::{Token, TokenKind};
+use super::token::{ Token, TokenKind };
 
-pub fn lex(source: &SourceFile) -> Result<Vec<Token>, Vec<Diagnostic>> {
+pub fn lex(source: &SourceFile) -> Result<Vec<Token>, Vec<CompilerError>> {
     let mut lexer = Lexer::new(source);
     lexer.run();
 
@@ -19,7 +18,7 @@ struct Lexer<'a> {
     position: usize,
 
     tokens: Vec<Token>,
-    errors: Vec<Diagnostic>,
+    errors: Vec<CompilerError>,
 }
 
 impl<'a> Lexer<'a> {
@@ -33,10 +32,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn run(&mut self) {
-        while self.position < self.source.len() {
+        while self.position < self.source.text.len() {
             self.skip_whitespace_and_comments();
 
-            if self.position >= self.source.len() {
+            if self.position >= self.source.text.len() {
                 break;
             }
 
@@ -101,10 +100,13 @@ impl<'a> Lexer<'a> {
             }
 
             _ => {
-                self.errors.push(Diagnostic::at(
-                    format!("unexpected character '{}'", c),
-                    Span::new(start, start + c.len_utf8()),
-                ));
+                self.errors.push(
+                    CompilerError::new(
+                        &self.source.text,
+                        format!("unexpected character '{}'", c),
+                        Span::new(start, start + c.len_utf8()).to_source_span()
+                    )
+                );
 
                 self.advance();
             }
@@ -114,9 +116,7 @@ impl<'a> Lexer<'a> {
     fn scan_number(&mut self) {
         let start = self.position;
 
-        while self.position < self.source.len()
-            && self.current_char().is_ascii_digit()
-        {
+        while self.position < self.source.text.len() && self.current_char().is_ascii_digit() {
             self.advance();
         }
 
@@ -131,10 +131,13 @@ impl<'a> Lexer<'a> {
             }
 
             Err(_) => {
-                self.errors.push(Diagnostic::at(
-                    "integer literal is too large",
-                    Span::new(start, self.position),
-                ));
+                self.errors.push(
+                    CompilerError::new(
+                        &self.source.text,
+                        "integer literal is too large",
+                        Span::new(start, self.position).to_source_span()
+                    )
+                );
             }
         }
     }
@@ -146,7 +149,7 @@ impl<'a> Lexer<'a> {
 
         let mut value = String::new();
 
-        while self.position < self.source.len() {
+        while self.position < self.source.text.len() {
             let c = self.current_char();
 
             if c == '"' {
@@ -163,7 +166,7 @@ impl<'a> Lexer<'a> {
             if c == '\\' {
                 self.advance();
 
-                if self.position >= self.source.len() {
+                if self.position >= self.source.text.len() {
                     break;
                 }
 
@@ -176,13 +179,13 @@ impl<'a> Lexer<'a> {
                     '\\' => value.push('\\'),
 
                     _ => {
-                        self.errors.push(Diagnostic::at(
-                            format!("unknown escape sequence '\\{}'", escaped),
-                            Span::new(
-                                self.position - 1,
-                                self.position + 1,
-                            ),
-                        ));
+                        self.errors.push(
+                            CompilerError::new(
+                                &self.source.text,
+                                format!("unknown escape sequence '\\{}'", escaped),
+                                Span::new(self.position - 1, self.position + 1).to_source_span()
+                            )
+                        );
                     }
                 }
 
@@ -193,18 +196,16 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        self.errors.push(Diagnostic::at(
-            "unterminated string literal",
-            Span::new(start, self.position),
-        ));
+        self.errors.push(
+            CompilerError::new(
+                    &self.source.text,"unterminated string literal", Span::new(start, self.position).to_source_span())
+        );
     }
 
     fn scan_identifier(&mut self) {
         let start = self.position;
 
-        while self.position < self.source.len()
-            && is_identifier_continue(self.current_char())
-        {
+        while self.position < self.source.text.len() && is_identifier_continue(self.current_char()) {
             self.advance();
         }
 
@@ -242,19 +243,16 @@ impl<'a> Lexer<'a> {
 
     fn skip_whitespace_and_comments(&mut self) {
         loop {
-            while self.position < self.source.len()
-                && self.current_char().is_whitespace()
-            {
+            while self.position < self.source.text.len() && self.current_char().is_whitespace() {
                 self.advance();
             }
 
-            if self.position + 1 < self.source.len()
-                && self.current_char() == '/'
-                && self.peek_char() == '/'
+            if
+                self.position + 1 < self.source.text.len() &&
+                self.current_char() == '/' &&
+                self.peek_char() == '/'
             {
-                while self.position < self.source.len()
-                    && self.current_char() != '\n'
-                {
+                while self.position < self.source.text.len() && self.current_char() != '\n' {
                     self.advance();
                 }
 
@@ -276,18 +274,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn current_char(&self) -> char {
-        self.source
-            .text
-            .as_bytes()
-            .get(self.position)
-            .copied()
-            .map(char::from)
-            .unwrap_or('\0')
+        self.source.text.as_bytes().get(self.position).copied().map(char::from).unwrap_or('\0')
     }
 
     fn peek_char(&self) -> char {
-        self.source
-            .text
+        self.source.text
             .as_bytes()
             .get(self.position + 1)
             .copied()

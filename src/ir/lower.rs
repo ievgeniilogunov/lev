@@ -1,17 +1,14 @@
-use crate::compiler::diagnostics::Diagnostic;
-use crate::semantic::{hir::*, types::Type};
+use crate::{compiler::error::CompilerError, semantic::{ hir::*, types::Type }};
 
 use super::ir::*;
 
-pub fn lower_to_ir(program: HirProgram) -> Result<IrProgram, Vec<Diagnostic>> {
-    let structs = program
-        .structs
+pub fn lower_to_ir(program: HirProgram) -> Result<IrProgram, Vec<CompilerError>> {
+    let structs = program.structs
         .iter()
         .map(|structure| IrStruct {
             id: structure.id,
             name: structure.name.clone(),
-            fields: structure
-                .fields
+            fields: structure.fields
                 .iter()
                 .map(|field| IrField {
                     name: field.name.clone(),
@@ -30,8 +27,7 @@ pub fn lower_to_ir(program: HirProgram) -> Result<IrProgram, Vec<Diagnostic>> {
 }
 
 fn lower_function(function: &HirFunction) -> IrFunction {
-    let parameters = function
-        .params
+    let parameters = function.params
         .iter()
         .map(|param| IrLocal {
             id: param.local,
@@ -40,8 +36,7 @@ fn lower_function(function: &HirFunction) -> IrFunction {
         })
         .collect();
 
-    let locals = function
-        .locals
+    let locals = function.locals
         .iter()
         .map(|local| IrLocal {
             id: local.id,
@@ -135,10 +130,7 @@ impl FunctionBuilder {
     }
 
     fn is_terminated(&self) -> bool {
-        !matches!(
-            self.blocks[self.current_block.0].terminator,
-            Terminator::Unreachable
-        )
+        !matches!(self.blocks[self.current_block.0].terminator, Terminator::Unreachable)
     }
 
     fn emit(&mut self, instruction: IrInstruction) {
@@ -192,7 +184,7 @@ impl FunctionBuilder {
                     });
                 }
             }
-            
+
             HirStmt::Assign { local, value } => {
                 if let Some(value) = self.lower_expr(value) {
                     self.emit(IrInstruction::StoreLocal {
@@ -203,9 +195,7 @@ impl FunctionBuilder {
             }
 
             HirStmt::Return { value } => {
-                let value = value
-                    .as_ref()
-                    .and_then(|expr| self.lower_expr(expr));
+                let value = value.as_ref().and_then(|expr| self.lower_expr(expr));
 
                 self.terminate(Terminator::Return { value });
             }
@@ -214,11 +204,7 @@ impl FunctionBuilder {
                 let _ = self.lower_expr(expr);
             }
 
-            HirStmt::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
+            HirStmt::If { condition, then_block, else_block } => {
                 self.lower_if(condition, then_block, else_block.as_ref());
             }
 
@@ -244,7 +230,7 @@ impl FunctionBuilder {
         &mut self,
         condition: &HirExpr,
         then_block: &HirBlock,
-        else_block: Option<&HirBlock>,
+        else_block: Option<&HirBlock>
     ) {
         let Some(condition) = self.lower_expr(condition) else {
             return;
@@ -389,20 +375,13 @@ impl FunctionBuilder {
                 Some(destination)
             }
 
-            HirExprKind::Call {
-                function,
-                arguments,
-            } => {
+            HirExprKind::Call { function, arguments } => {
                 let arguments = arguments
                     .iter()
                     .filter_map(|argument| self.lower_expr(argument))
                     .collect();
 
-                let destination = if expr.ty == Type::Void {
-                    None
-                } else {
-                    Some(self.new_value())
-                };
+                let destination = if expr.ty == Type::Void { None } else { Some(self.new_value()) };
 
                 self.emit(IrInstruction::Call {
                     destination,
@@ -411,6 +390,19 @@ impl FunctionBuilder {
                 });
 
                 destination
+            }
+            HirExprKind::Field { receiver, field } => {
+                let receiver_value = self.lower_expr(receiver)?;
+
+                let destination = self.new_value();
+
+                self.emit(IrInstruction::LoadField {
+                    destination,
+                    receiver: receiver_value,
+                    field: *field,
+                });
+
+                Some(destination)
             }
         }
     }

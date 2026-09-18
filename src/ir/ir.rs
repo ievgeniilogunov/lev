@@ -85,6 +85,12 @@ pub enum IrInstruction {
         value: ValueId,
     },
 
+    LoadField {
+        destination: ValueId,
+        receiver: ValueId,
+        field: usize,
+    },
+
     Binary {
         destination: ValueId,
         op: IrBinaryOp,

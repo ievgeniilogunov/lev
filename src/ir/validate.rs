@@ -1,18 +1,18 @@
 use std::collections::{ HashMap, HashSet };
 
-use crate::{ compiler::diagnostics::Diagnostic, semantic::symbols::FunctionId };
+use crate::{ compiler::error::CompilerError, semantic::symbols::FunctionId };
 
 use super::ir::*;
 
-pub fn validate(program: &IrProgram) -> Result<(), Vec<Diagnostic>> {
+pub fn validate(program: &IrProgram) -> Result<(), Vec<CompilerError>> {
     validate_with_options(program, false)
 }
 
-pub fn validate_ssa(program: &IrProgram) -> Result<(), Vec<Diagnostic>> {
+pub fn validate_ssa(program: &IrProgram) -> Result<(), Vec<CompilerError>> {
     validate_with_options(program, true)
 }
 
-fn validate_with_options(program: &IrProgram, require_ssa: bool) -> Result<(), Vec<Diagnostic>> {
+fn validate_with_options(program: &IrProgram, require_ssa: bool) -> Result<(), Vec<CompilerError>> {
     let mut validator = Validator::new(program);
 
     validator.validate_program(require_ssa);
@@ -26,7 +26,7 @@ fn validate_with_options(program: &IrProgram, require_ssa: bool) -> Result<(), V
 
 struct Validator<'a> {
     program: &'a IrProgram,
-    errors: Vec<Diagnostic>,
+    errors: Vec<CompilerError>,
 }
 
 impl<'a> Validator<'a> {
@@ -194,7 +194,11 @@ impl<'a> Validator<'a> {
                         match !locals.contains(local) {
                             true => {
                                 self.error(
-                                    format!("function '{}': unknown local {}", function.name, local.0)
+                                    format!(
+                                        "function '{}': unknown local {}",
+                                        function.name,
+                                        local.0
+                                    )
                                 );
                             }
                             false => (),
@@ -215,7 +219,10 @@ impl<'a> Validator<'a> {
 
         for block in &function.blocks {
             for instruction in &block.instructions {
-                if let IrInstruction::Call { function: target, .. } = instruction && !functions.contains(target) {
+                if
+                    let IrInstruction::Call { function: target, .. } = instruction &&
+                    !functions.contains(target)
+                {
                     self.error(
                         format!(
                             "function '{}': call references unknown function #{}",
@@ -263,7 +270,10 @@ impl<'a> Validator<'a> {
             }
 
             for instruction in &block.instructions {
-                if let Some(destination) = instruction_destination(instruction) && definitions.insert(destination, block.id).is_some() {
+                if
+                    let Some(destination) = instruction_destination(instruction) &&
+                    definitions.insert(destination, block.id).is_some()
+                {
                     self.error(
                         format!(
                             "function '{}': value %{} is defined more than once",
@@ -334,6 +344,7 @@ impl<'a> Validator<'a> {
             IrInstruction::Phi { sources, .. } => {
                 self.validate_phi_sources(function, use_block, sources, definitions, dominance);
             }
+            IrInstruction::LoadField { destination, receiver, field } => todo!(),
         }
     }
 
@@ -494,19 +505,19 @@ impl<'a> Validator<'a> {
                 );
             }
 
-            if block.id == function.entry && (dominators.len() != 1 || !dominators.contains(&function.entry)) {
+            if
+                block.id == function.entry &&
+                (dominators.len() != 1 || !dominators.contains(&function.entry))
+            {
                 self.error(
-                    format!(
-                        "function '{}': entry block has invalid dominator set",
-                        function.name
-                    )
+                    format!("function '{}': entry block has invalid dominator set", function.name)
                 );
             }
         }
     }
 
     fn error(&mut self, message: impl Into<String>) {
-        self.errors.push(Diagnostic::new(message));
+        self.errors.push(CompilerError::internal(message));
     }
 }
 
@@ -523,6 +534,7 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
         IrInstruction::StoreLocal { .. } => None,
 
         IrInstruction::Call { destination, .. } => *destination,
+        IrInstruction::LoadField { destination, .. } => Some(*destination),
     }
 }
 

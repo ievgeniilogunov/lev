@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 
-use crate::compiler::{ diagnostics::Diagnostic, source::Span };
+use crate::compiler::error::CompilerError;
+use crate::compiler::source::SourceFile;
+use crate::compiler::{ source::Span };
 
 use crate::parser::ast::*;
 
 use super::{ hir::*, scope::Scope, symbols::*, types::Type };
 
-pub fn analyze(program: Program) -> Result<HirProgram, Vec<Diagnostic>> {
-    let mut analyzer = Analyzer::new();
+pub fn analyze(program: Program, source: SourceFile) -> Result<HirProgram, Vec<CompilerError>> {
+    let mut analyzer = Analyzer::new(&source);
 
     analyzer.collect_struct_names(&program);
     analyzer.collect_function_signatures(&program);
@@ -26,17 +28,23 @@ pub fn analyze(program: Program) -> Result<HirProgram, Vec<Diagnostic>> {
     }
 }
 
-struct Analyzer {
+struct Analyzer<'a> {
+    source: &'a SourceFile,
     symbols: SymbolTable,
-    errors: Vec<Diagnostic>,
+    errors: Vec<CompilerError>,
 }
 
-impl Analyzer {
-    fn new() -> Self {
+impl<'a> Analyzer<'a> {
+    fn new(source: &'a SourceFile) -> Self {
         Self {
+            source,
             symbols: SymbolTable::new(),
             errors: Vec::new(),
         }
+    }
+
+    fn error_at(&self, message: impl Into<String>, span: Span) -> CompilerError {
+        CompilerError::new(&self.source.text, message, span.to_source_span())
     }
 
     // ---------------------------------------------------------------------
@@ -46,7 +54,7 @@ impl Analyzer {
     fn collect_struct_names(&mut self, program: &Program) {
         for structure in &program.structs {
             if let Err(error) = self.symbols.add_struct(structure.name.clone()) {
-                self.errors.push(Diagnostic::at(error, structure.span));
+                self.errors.push(self.error_at(error, structure.span));
             }
         }
     }
@@ -73,7 +81,7 @@ impl Analyzer {
         for parameter in &function.params {
             if !seen_parameters.insert(parameter.name.clone()) {
                 self.errors.push(
-                    Diagnostic::at(
+                    self.error_at(
                         format!("parameter '{}' is duplicated", parameter.name),
                         parameter.span
                     )
@@ -93,7 +101,7 @@ impl Analyzer {
             None => self.symbols.add_function(function.name.clone(), parameters, return_type),
         };
         if let Err(error) = result {
-            self.errors.push(Diagnostic::at(error, function.span));
+            self.errors.push(self.error_at(error, function.span));
         }
     }
 
@@ -110,7 +118,7 @@ impl Analyzer {
 
                 if fields.iter().any(|existing: &FieldSymbol| existing.name == field.name) {
                     self.errors.push(
-                        Diagnostic::at(
+                        self.error_at(
                             format!(
                                 "field '{}' is already declared in struct '{}'",
                                 field.name,
@@ -151,7 +159,7 @@ impl Analyzer {
             return Some(Type::Struct(struct_id));
         }
 
-        self.errors.push(Diagnostic::at(format!("unknown type '{}'", name), span));
+        self.errors.push(self.error_at(format!("unknown type '{}'", name), span));
 
         None
     }
@@ -235,7 +243,7 @@ impl Analyzer {
                     });
                 }
                 Err(error) => {
-                    self.errors.push(Diagnostic::at(error, function.span));
+                    self.errors.push(self.error_at(error, function.span));
                 }
             }
         }
@@ -250,7 +258,7 @@ impl Analyzer {
                     });
                 }
                 Err(error) => {
-                    self.errors.push(Diagnostic::at(error, function.span));
+                    self.errors.push(self.error_at(error, function.span));
                 }
             }
         }
@@ -299,9 +307,9 @@ impl Analyzer {
         scope: &mut Scope,
         return_type: &Type,
         loop_depth: usize
-    ) -> Result<HirBlock, Vec<Diagnostic>> {
+    ) -> Result<HirBlock, Vec<CompilerError>> {
         let Stmt::Block { statements, .. } = statement else {
-            return Err(vec![Diagnostic::new("internal error: expected block statement")]);
+            return Err(vec![CompilerError::internal("internal error: expected block statement")]);
         };
 
         scope.push_scope();
@@ -340,7 +348,7 @@ impl Analyzer {
         scope: &mut Scope,
         return_type: &Type,
         loop_depth: usize
-    ) -> Result<HirStmt, Vec<Diagnostic>> {
+    ) -> Result<HirStmt, Vec<CompilerError>> {
         match statement {
             Stmt::Assign { name, value, span } => {
                 let local = match scope.lookup(name) {
@@ -348,7 +356,7 @@ impl Analyzer {
 
                     None => {
                         return Err(
-                            vec![Diagnostic::at(format!("unknown variable '{}'", name), *span)]
+                            vec![self.error_at(format!("unknown variable '{}'", name), *span)]
                         );
                     }
                 };
@@ -356,7 +364,7 @@ impl Analyzer {
                 if !scope.is_mutable(local) {
                     return Err(
                         vec![
-                            Diagnostic::at(
+                            self.error_at(
                                 format!("cannot assign to immutable variable '{}'", name),
                                 *span
                             )
@@ -369,7 +377,7 @@ impl Analyzer {
 
                     None => {
                         return Err(
-                            vec![Diagnostic::at("internal error: missing type for local", *span)]
+                            vec![self.error_at("internal error: missing type for local", *span)]
                         );
                     }
                 };
@@ -379,7 +387,7 @@ impl Analyzer {
                 if value.ty != expected {
                     return Err(
                         vec![
-                            Diagnostic::at(
+                            self.error_at(
                                 format!(
                                     "cannot assign {:?} to variable '{}' of type {:?}",
                                     value.ty,
@@ -396,7 +404,7 @@ impl Analyzer {
             }
 
             Stmt::Block { .. } =>
-                Err(vec![Diagnostic::new("internal error: unexpected nested block statement")]),
+                Err(vec![CompilerError::internal("internal error: unexpected nested block statement")]),
 
             Stmt::Let { name, ty, value, span } => {
                 let declared_type = match self.resolve_type(ty, *span) {
@@ -405,7 +413,7 @@ impl Analyzer {
                     None => {
                         return Err(
                             vec![
-                                Diagnostic::at(
+                                self.error_at(
                                     "cannot determine type of variable declaration",
                                     *span
                                 )
@@ -419,7 +427,7 @@ impl Analyzer {
                 if value.ty != declared_type {
                     return Err(
                         vec![
-                            Diagnostic::at(
+                            self.error_at(
                                 format!(
                                     "cannot initialize variable '{}' of type {:?} with value of type {:?}",
                                     name,
@@ -436,7 +444,7 @@ impl Analyzer {
                     Ok(local) => local,
 
                     Err(error) => {
-                        return Err(vec![Diagnostic::at(error, *span)]);
+                        return Err(vec![self.error_at(error, *span)]);
                     }
                 };
 
@@ -452,7 +460,7 @@ impl Analyzer {
 
                         Err(
                             vec![
-                                Diagnostic::at(
+                                self.error_at(
                                     format!(
                                         "void function cannot return a value of type {:?}",
                                         value.ty
@@ -466,7 +474,7 @@ impl Analyzer {
                     (expected, None) => {
                         Err(
                             vec![
-                                Diagnostic::at(
+                                self.error_at(
                                     format!("function must return a value of type {:?}", expected),
                                     *span
                                 )
@@ -480,7 +488,7 @@ impl Analyzer {
                         if value.ty != *expected {
                             return Err(
                                 vec![
-                                    Diagnostic::at(
+                                    self.error_at(
                                         format!(
                                             "cannot return value of type {:?} from function returning {:?}",
                                             value.ty,
@@ -511,7 +519,7 @@ impl Analyzer {
                 if condition.ty != Type::Bool {
                     return Err(
                         vec![
-                            Diagnostic::at(
+                            self.error_at(
                                 format!("if condition must be bool, found {:?}", condition.ty),
                                 *span
                             )
@@ -548,7 +556,7 @@ impl Analyzer {
                 if condition.ty != Type::Bool {
                     return Err(
                         vec![
-                            Diagnostic::at(
+                            self.error_at(
                                 format!("while condition must be bool, found {:?}", condition.ty),
                                 *span
                             )
@@ -566,7 +574,7 @@ impl Analyzer {
 
             Stmt::Break { span } => {
                 if loop_depth == 0 {
-                    return Err(vec![Diagnostic::at("'break' is only valid inside a loop", *span)]);
+                    return Err(vec![self.error_at("'break' is only valid inside a loop", *span)]);
                 }
 
                 Ok(HirStmt::Break)
@@ -575,7 +583,7 @@ impl Analyzer {
             Stmt::Continue { span } => {
                 if loop_depth == 0 {
                     return Err(
-                        vec![Diagnostic::at("'continue' is only valid inside a loop", *span)]
+                        vec![self.error_at("'continue' is only valid inside a loop", *span)]
                     );
                 }
 
@@ -589,7 +597,7 @@ impl Analyzer {
                     None => {
                         return Err(
                             vec![
-                                Diagnostic::at(
+                                self.error_at(
                                     "cannot determine type of variable declaration",
                                     *span
                                 )
@@ -603,7 +611,7 @@ impl Analyzer {
                 if value.ty != declared_type {
                     return Err(
                         vec![
-                            Diagnostic::at(
+                            self.error_at(
                                 format!(
                                     "cannot initialize variable '{}' of type {:?} with value of type {:?}",
                                     name,
@@ -620,7 +628,7 @@ impl Analyzer {
                     Ok(local) => local,
 
                     Err(error) => {
-                        return Err(vec![Diagnostic::at(error, *span)]);
+                        return Err(vec![self.error_at(error, *span)]);
                     }
                 };
 
@@ -664,7 +672,7 @@ impl Analyzer {
 
                             None => {
                                 self.errors.push(
-                                    Diagnostic::at("internal error: missing type for local", *span)
+                                    self.error_at("internal error: missing type for local", *span)
                                 );
 
                                 Type::Int
@@ -680,7 +688,7 @@ impl Analyzer {
 
                     None => {
                         self.errors.push(
-                            Diagnostic::at(format!("unknown variable '{}'", name), *span)
+                            self.error_at(format!("unknown variable '{}'", name), *span)
                         );
 
                         HirExpr {
@@ -700,7 +708,7 @@ impl Analyzer {
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
                         if left.ty != Type::Int || right.ty != Type::Int {
                             self.errors.push(
-                                Diagnostic::at(
+                                self.error_at(
                                     format!(
                                         "arithmetic operator requires int operands, found {:?} and {:?}",
                                         left.ty,
@@ -739,7 +747,7 @@ impl Analyzer {
                     BinaryOp::Equal => {
                         if left.ty != right.ty {
                             self.errors.push(
-                                Diagnostic::at(
+                                self.error_at(
                                     format!(
                                         "cannot compare values of different types: {:?} and {:?}",
                                         left.ty,
@@ -775,7 +783,7 @@ impl Analyzer {
 
                     let Type::Struct(struct_id) = analyzed_receiver.ty.clone() else {
                         self.errors.push(
-                            Diagnostic::at(
+                            self.error_at(
                                 format!(
                                     "cannot call method '{}' on value of type {:?}",
                                     name,
@@ -794,7 +802,7 @@ impl Analyzer {
 
                     let Some(method_id) = self.symbols.find_method(struct_id, name) else {
                         self.errors.push(
-                            Diagnostic::at(
+                            self.error_at(
                                 format!(
                                     "struct '{}' has no method '{}'",
                                     self.symbols.struct_symbol(struct_id).name,
@@ -815,7 +823,7 @@ impl Analyzer {
 
                     if arguments.len() != method.parameters.len() {
                         self.errors.push(
-                            Diagnostic::at(
+                            self.error_at(
                                 format!(
                                     "method '{}.{}' expects {} argument(s), found {}",
                                     self.symbols.struct_symbol(struct_id).name,
@@ -839,7 +847,7 @@ impl Analyzer {
                         if let Some(parameter) = method.parameters.get(index) {
                             if value.ty != parameter.ty {
                                 self.errors.push(
-                                    Diagnostic::at(
+                                    self.error_at(
                                         format!(
                                             "argument {} of method '{}.{}' has type {:?}, expected {:?}",
                                             index + 1,
@@ -868,7 +876,7 @@ impl Analyzer {
                 } else {
                     let Some(function_id) = self.symbols.find_function(name) else {
                         self.errors.push(
-                            Diagnostic::at(format!("unknown function '{}'", name), *span)
+                            self.error_at(format!("unknown function '{}'", name), *span)
                         );
 
                         return HirExpr {
@@ -882,7 +890,7 @@ impl Analyzer {
 
                     if arguments.len() != function.parameters.len() {
                         self.errors.push(
-                            Diagnostic::at(
+                            self.error_at(
                                 format!(
                                     "function '{}' expects {} argument(s), found {}",
                                     name,
@@ -902,7 +910,7 @@ impl Analyzer {
                         if let Some(parameter) = function.parameters.get(index) {
                             if value.ty != parameter.ty {
                                 self.errors.push(
-                                    Diagnostic::at(
+                                    self.error_at(
                                         format!(
                                             "argument {} of '{}' has type {:?}, expected {:?}",
                                             index + 1,
@@ -927,6 +935,54 @@ impl Analyzer {
                         ty: function.return_type,
                         span: *span,
                     }
+                }
+            }
+            Expr::Member { receiver, name, span } => {
+                let analyzed_receiver = self.analyze_expr(receiver, scope);
+
+                let Type::Struct(struct_id) = analyzed_receiver.ty else {
+                    self.errors.push(
+                        self.error_at(
+                            format!("type {:?} has no fields", analyzed_receiver.ty),
+                            *span
+                        )
+                    );
+
+                    return HirExpr {
+                        kind: HirExprKind::Integer(0),
+                        ty: Type::Int,
+                        span: *span,
+                    };
+                };
+
+                let struct_symbol = self.symbols.struct_symbol(struct_id);
+
+                let Some((field_index, field_type)) = struct_symbol.fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, field)| field.name == *name)
+                    .map(|(index, field)| (index, field.ty.clone())) else {
+                    self.errors.push(
+                        self.error_at(
+                            format!("struct '{}' has no field '{}'", struct_symbol.name, name),
+                            *span
+                        )
+                    );
+
+                    return HirExpr {
+                        kind: HirExprKind::Integer(0),
+                        ty: Type::Int,
+                        span: *span,
+                    };
+                };
+
+                HirExpr {
+                    kind: HirExprKind::Field {
+                        receiver: Box::new(analyzed_receiver),
+                        field: field_index,
+                    },
+                    ty: field_type,
+                    span: *span,
                 }
             }
         }
@@ -1006,6 +1062,8 @@ mod tests {
 
     #[test]
     fn analyzes_integer_return() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1019,7 +1077,7 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_ok(), "expected successful analysis: {result:?}");
 
@@ -1031,6 +1089,8 @@ mod tests {
 
     #[test]
     fn rejects_return_type_mismatch() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1044,7 +1104,7 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_err());
 
@@ -1057,6 +1117,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_variable() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1070,7 +1132,7 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_err());
 
@@ -1083,6 +1145,8 @@ mod tests {
 
     #[test]
     fn analyzes_local_variable_and_assignment() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1109,7 +1173,7 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_ok(), "expected successful analysis: {result:?}");
 
@@ -1123,6 +1187,7 @@ mod tests {
 
     #[test]
     fn rejects_assignment_type_mismatch() {
+        let source = SourceFile::new("");
         let program = program(
             vec![
                 function(
@@ -1149,7 +1214,7 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_err());
 
@@ -1162,6 +1227,8 @@ mod tests {
 
     #[test]
     fn analyzes_integer_binary_expression() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1175,13 +1242,15 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_ok(), "expected successful analysis: {result:?}");
     }
 
     #[test]
     fn rejects_non_integer_arithmetic() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1195,7 +1264,7 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_err());
 
@@ -1208,6 +1277,8 @@ mod tests {
 
     #[test]
     fn analyzes_boolean_condition() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1239,13 +1310,15 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_ok(), "expected successful analysis: {result:?}");
     }
 
     #[test]
     fn rejects_non_boolean_condition() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1268,7 +1341,7 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_err());
 
@@ -1281,11 +1354,13 @@ mod tests {
 
     #[test]
     fn rejects_break_outside_loop() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![function("main", TypeName::Void, vec![Stmt::Break { span: span() }])]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_err());
 
@@ -1298,11 +1373,13 @@ mod tests {
 
     #[test]
     fn rejects_continue_outside_loop() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![function("main", TypeName::Void, vec![Stmt::Continue { span: span() }])]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_err());
 
@@ -1315,6 +1392,8 @@ mod tests {
 
     #[test]
     fn allows_break_inside_loop() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1329,13 +1408,15 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_ok(), "expected successful analysis: {result:?}");
     }
 
     #[test]
     fn analyzes_equality_expression() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1349,13 +1430,15 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_ok(), "expected successful analysis: {result:?}");
     }
 
     #[test]
     fn rejects_equality_between_different_types() {
+        let source = SourceFile::new("");
+
         let program = program(
             vec![
                 function(
@@ -1369,7 +1452,7 @@ mod tests {
             ]
         );
 
-        let result = analyze(program);
+        let result = analyze(program, source);
 
         assert!(result.is_err(), "expected equality between different types to fail");
     }
