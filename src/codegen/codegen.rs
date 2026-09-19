@@ -1,6 +1,9 @@
 use std::collections::{ BTreeMap, HashMap, HashSet };
 use std::fmt::Write;
 
+use crate::compiler::error::CompilerError;
+
+use crate::ir::IrType;
 use crate::ir::ir::{
     BasicBlock,
     BlockId,
@@ -19,23 +22,31 @@ pub enum CodegenTarget {
     X86_64MacOS,
 }
 
-pub fn generate(program: &IrProgram, target: CodegenTarget) -> Result<String, String> {
+pub fn generate(program: &IrProgram, target: CodegenTarget) -> Result<String, Vec<CompilerError>> {
     let mut output = String::new();
 
-    writeln!(output, ".intel_syntax noprefix").map_err(|e| e.to_string())?;
-    writeln!(output, ".text").map_err(|e| e.to_string())?;
+    writeln!(output, ".intel_syntax noprefix").map_err(|error|
+        vec![CompilerError::internal(error.to_string())]
+    )?;
+    writeln!(output, ".text").map_err(|error| vec![CompilerError::internal(error.to_string())])?;
 
     let string_labels = collect_string_literals(program);
 
-    let function_names: HashMap<_, _> = program.functions
-        .iter()
-        .map(|function| (function.id, function.name.clone()))
-        .collect();
+    let function_names: HashMap<_, _> = program
+    .functions
+    .iter()
+    .map(|function| {
+        (
+            function.id,
+            FunctionCodegen::function_symbol_name(program, function),
+        )
+    })
+    .collect();
 
     emit_string_section(&mut output, &string_labels, target)?;
 
     for function in &program.functions {
-        generate_function(&mut output, function, &function_names, &string_labels, target)?;
+        generate_function(&mut output, program, function, &function_names, &string_labels, target)?;
     }
 
     Ok(output)
@@ -66,26 +77,32 @@ fn emit_string_section(
     output: &mut String,
     string_labels: &BTreeMap<String, String>,
     target: CodegenTarget
-) -> Result<(), String> {
+) -> Result<(), Vec<CompilerError>> {
     if string_labels.is_empty() {
         return Ok(());
     }
 
     match target {
         CodegenTarget::X86_64 => {
-            writeln!(output, ".section .rodata").map_err(|e| e.to_string())?;
+            writeln!(output, ".section .rodata").map_err(|error|
+                vec![CompilerError::internal(error.to_string())]
+            )?;
         }
 
         CodegenTarget::X86_64MacOS => {
-            writeln!(output, ".section __TEXT,__cstring").map_err(|e| e.to_string())?;
+            writeln!(output, ".section __TEXT,__cstring").map_err(|error|
+                vec![CompilerError::internal(error.to_string())]
+            )?;
         }
     }
 
     for (value, label) in string_labels {
-        writeln!(output, "{}:", label).map_err(|e| e.to_string())?;
+        writeln!(output, "{}:", label).map_err(|error|
+            vec![CompilerError::internal(error.to_string())]
+        )?;
 
-        writeln!(output, "    .asciz \"{}\"", escape_assembly_string(value)).map_err(|e|
-            e.to_string()
+        writeln!(output, "    .asciz \"{}\"", escape_assembly_string(value)).map_err(|error|
+            vec![CompilerError::internal(error.to_string())]
         )?;
     }
 
@@ -118,35 +135,21 @@ fn escape_assembly_string(value: &str) -> String {
 
 struct FunctionCodegen<'a> {
     output: &'a mut String,
+    program: &'a IrProgram,
     function: &'a IrFunction,
-
-    /// Every SSA value gets a stack slot.
     value_slots: HashMap<ValueId, i32>,
-
-    /// Phi copies are emitted on predecessor edges.
-    ///
-    /// Key:
-    ///     predecessor block
-    ///
-    /// Value:
-    ///     copies that must happen when leaving that block
     edge_copies: HashMap<BlockId, Vec<(ValueId, ValueId)>>,
-
     function_names: &'a HashMap<FunctionId, String>,
-
     next_stack_offset: i32,
-
     target: CodegenTarget,
-
-    /// One extra stack slot used when parallel phi copies form a cycle.
     phi_temp_offset: i32,
-
     string_labels: &'a BTreeMap<String, String>,
 }
 
 impl<'a> FunctionCodegen<'a> {
     fn new(
         output: &'a mut String,
+        program: &'a IrProgram,
         function: &'a IrFunction,
         function_names: &'a HashMap<FunctionId, String>,
         string_labels: &'a BTreeMap<String, String>,
@@ -154,14 +157,15 @@ impl<'a> FunctionCodegen<'a> {
     ) -> Self {
         Self {
             output,
+            program,
             function,
             value_slots: HashMap::new(),
             edge_copies: HashMap::new(),
             function_names,
-            string_labels,
             next_stack_offset: 8,
             phi_temp_offset: 0,
             target,
+            string_labels,
         }
     }
 
@@ -188,7 +192,7 @@ impl<'a> FunctionCodegen<'a> {
         }
     }
 
-    fn generate(mut self) -> Result<(), String> {
+    fn generate(mut self) -> Result<(), Vec<CompilerError>> {
         self.collect_phi_copies();
         self.allocate_value_slots();
 
@@ -196,11 +200,16 @@ impl<'a> FunctionCodegen<'a> {
         self.phi_temp_offset = self.next_stack_offset;
         self.next_stack_offset += 8;
 
-        let symbol = self.symbol_name(&self.function.name);
+        let function_name = Self::function_symbol_name(self.program, self.function);
+        let symbol = self.symbol_name(&function_name);
 
-        writeln!(self.output, ".globl {}", symbol).map_err(|e| e.to_string())?;
+        writeln!(self.output, ".globl {}", symbol).map_err(|error|
+            vec![CompilerError::internal(error.to_string())]
+        )?;
 
-        writeln!(self.output, "{}:", symbol).map_err(|e| e.to_string())?;
+        writeln!(self.output, "{}:", symbol).map_err(|error|
+            vec![CompilerError::internal(error.to_string())]
+        )?;
 
         self.emit_prologue()?;
 
@@ -232,7 +241,7 @@ impl<'a> FunctionCodegen<'a> {
         }
     }
 
-    fn emit_edge_copies(&mut self, predecessor: BlockId) -> Result<(), String> {
+    fn emit_edge_copies(&mut self, predecessor: BlockId) -> Result<(), Vec<CompilerError>> {
         let Some(copies) = self.edge_copies.get(&predecessor).cloned() else {
             return Ok(());
         };
@@ -259,7 +268,10 @@ impl<'a> FunctionCodegen<'a> {
     ///     temp <- a
     ///     a <- b
     ///     b <- temp
-    fn emit_parallel_copies(&mut self, copies: &[(ValueId, ValueId)]) -> Result<(), String> {
+    fn emit_parallel_copies(
+        &mut self,
+        copies: &[(ValueId, ValueId)]
+    ) -> Result<(), Vec<CompilerError>> {
         let mut pending: Vec<(ValueId, ValueId)> = copies.to_vec();
 
         while !pending.is_empty() {
@@ -307,7 +319,7 @@ impl<'a> FunctionCodegen<'a> {
             self.emit_load(source, "rax")?;
 
             writeln!(self.output, "    mov [rbp-{}], rax", self.phi_temp_offset).map_err(|e|
-                e.to_string()
+                vec![CompilerError::internal(e.to_string())]
             )?;
 
             // Replace the source of this copy with a special temporary
@@ -338,7 +350,7 @@ impl<'a> FunctionCodegen<'a> {
 
             // Restore the original value from the temporary slot.
             writeln!(self.output, "    mov rax, [rbp-{}]", self.phi_temp_offset).map_err(|e|
-                e.to_string()
+                vec![CompilerError::internal(e.to_string())]
             )?;
 
             self.emit_store(current_destination, "rax")?;
@@ -381,15 +393,21 @@ impl<'a> FunctionCodegen<'a> {
         ((required + 15) / 16) * 16
     }
 
-    fn emit_prologue(&mut self) -> Result<(), String> {
-        writeln!(self.output, "    push rbp").map_err(|e| e.to_string())?;
+    fn emit_prologue(&mut self) -> Result<(), Vec<CompilerError>> {
+        writeln!(self.output, "    push rbp").map_err(|error|
+            vec![CompilerError::internal(error.to_string())]
+        )?;
 
-        writeln!(self.output, "    mov rbp, rsp").map_err(|e| e.to_string())?;
+        writeln!(self.output, "    mov rbp, rsp").map_err(|error|
+            vec![CompilerError::internal(error.to_string())]
+        )?;
 
         let stack_size = self.stack_size();
 
         if stack_size > 0 {
-            writeln!(self.output, "    sub rsp, {}", stack_size).map_err(|e| e.to_string())?;
+            writeln!(self.output, "    sub rsp, {}", stack_size).map_err(|error|
+                vec![CompilerError::internal(error.to_string())]
+            )?;
         }
 
         Ok(())
@@ -399,10 +417,12 @@ impl<'a> FunctionCodegen<'a> {
     // Blocks
     // ---------------------------------------------------------------------
 
-    fn emit_block(&mut self, block: &BasicBlock) -> Result<(), String> {
+    fn emit_block(&mut self, block: &BasicBlock) -> Result<(), Vec<CompilerError>> {
         let symbol = self.symbol_name(&self.function.name);
 
-        writeln!(self.output, ".L{}_{}:", symbol, block.id.0).map_err(|e| e.to_string())?;
+        writeln!(self.output, ".L{}_{}:", symbol, block.id.0).map_err(|error|
+            vec![CompilerError::internal(error.to_string())]
+        )?;
 
         for instruction in &block.instructions {
             // Phi instructions have already been converted into edge copies.
@@ -418,7 +438,7 @@ impl<'a> FunctionCodegen<'a> {
         // terminator transfers control.
         self.emit_edge_copies(block.id)?;
 
-        self.emit_terminator(&block.terminator)?;
+        self.emit_terminator(&block.terminator);
 
         Ok(())
     }
@@ -443,7 +463,7 @@ impl<'a> FunctionCodegen<'a> {
         }
     }
 
-    fn emit_instruction(&mut self, instruction: &IrInstruction) -> Result<(), String> {
+    fn emit_instruction(&mut self, instruction: &IrInstruction) -> Result<(), Vec<CompilerError>> {
         match instruction {
             IrInstruction::Parameter { destination, local } => {
                 let symbol = self.symbol_name(&self.function.name);
@@ -451,18 +471,28 @@ impl<'a> FunctionCodegen<'a> {
                     .iter()
                     .position(|parameter| parameter.id == *local)
                     .ok_or_else(|| {
-                        format!(
-                            "could not find parameter local {:?} in function '{}'",
-                            local,
-                            symbol
-                        )
+                        vec![
+                            CompilerError::internal(
+                                format!(
+                                    "could not find parameter local {:?} in function '{}'",
+                                    local,
+                                    symbol
+                                )
+                            )
+                        ]
                     })?;
 
                 let register = Self::argument_register(parameter_index).ok_or_else(|| {
-                    format!("more than six integer parameters are not supported yet")
+                    vec![
+                        CompilerError::internal(
+                            format!("more than six integer parameters are not supported yet")
+                        )
+                    ]
                 })?;
 
-                writeln!(self.output, "    mov rax, {}", register).map_err(|e| e.to_string())?;
+                writeln!(self.output, "    mov rax, {}", register).map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
 
                 self.emit_store(*destination, "rax")?;
             }
@@ -476,10 +506,16 @@ impl<'a> FunctionCodegen<'a> {
                 let label = self.string_labels
                     .get(value)
                     .ok_or_else(|| {
-                        format!("no assembly label found for string literal {:?}", value)
+                        vec![
+                            CompilerError::internal(
+                                format!("no assembly label found for string literal {:?}", value)
+                            )
+                        ]
                     })?;
 
-                writeln!(self.output, "    lea rax, [rip + {}]", label).map_err(|e| e.to_string())?;
+                writeln!(self.output, "    lea rax, [rip + {}]", label).map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
 
                 self.emit_store(*destination, "rax")?;
             }
@@ -487,27 +523,37 @@ impl<'a> FunctionCodegen<'a> {
             IrInstruction::ConstBool { destination, value } => {
                 let value = if *value { 1 } else { 0 };
 
-                writeln!(self.output, "    mov rax, {}", value).map_err(|e| e.to_string())?;
+                writeln!(self.output, "    mov rax, {}", value).map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
 
                 self.emit_store(*destination, "rax")?;
             }
 
             IrInstruction::LoadLocal { destination, local: _ } => {
                 return Err(
-                    format!(
-                        "LoadLocal should have been removed by SSA construction: {:?}",
-                        destination
-                    )
+                    vec![
+                        CompilerError::internal(
+                            format!(
+                                "LoadLocal should have been removed by SSA construction: {:?}",
+                                destination
+                            )
+                        )
+                    ]
                 );
             }
 
             IrInstruction::StoreLocal { local, value } => {
                 return Err(
-                    format!(
-                        "StoreLocal should have been removed by SSA construction: local {:?}, value {:?}",
-                        local,
-                        value
-                    )
+                    vec![
+                        CompilerError::internal(
+                            format!(
+                                "StoreLocal should have been removed by SSA construction: local {:?}, value {:?}",
+                                local,
+                                value
+                            )
+                        )
+                    ]
                 );
             }
 
@@ -517,29 +563,45 @@ impl<'a> FunctionCodegen<'a> {
 
                 match op {
                     IrBinaryOp::Add => {
-                        writeln!(self.output, "    add rax, rcx").map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    add rax, rcx").map_err(|e|
+                            vec![CompilerError::internal(e.to_string())]
+                        )?;
                     }
 
                     IrBinaryOp::Subtract => {
-                        writeln!(self.output, "    sub rax, rcx").map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    sub rax, rcx").map_err(|e|
+                            vec![CompilerError::internal(e.to_string())]
+                        )?;
                     }
 
                     IrBinaryOp::Multiply => {
-                        writeln!(self.output, "    imul rax, rcx").map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    imul rax, rcx").map_err(|e|
+                            vec![CompilerError::internal(e.to_string())]
+                        )?;
                     }
 
                     IrBinaryOp::Divide => {
-                        writeln!(self.output, "    cqo").map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    cqo").map_err(|e|
+                            vec![CompilerError::internal(e.to_string())]
+                        )?;
 
-                        writeln!(self.output, "    idiv rcx").map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    idiv rcx").map_err(|e|
+                            vec![CompilerError::internal(e.to_string())]
+                        )?;
                     }
 
                     IrBinaryOp::Equal => {
-                        writeln!(self.output, "    cmp rax, rcx").map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    cmp rax, rcx").map_err(|e|
+                            vec![CompilerError::internal(e.to_string())]
+                        )?;
 
-                        writeln!(self.output, "    sete al").map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    sete al").map_err(|e|
+                            vec![CompilerError::internal(e.to_string())]
+                        )?;
 
-                        writeln!(self.output, "    movzx rax, al").map_err(|e| e.to_string())?;
+                        writeln!(self.output, "    movzx rax, al").map_err(|e|
+                            vec![CompilerError::internal(e.to_string())]
+                        )?;
                     }
                 }
 
@@ -549,20 +611,30 @@ impl<'a> FunctionCodegen<'a> {
             IrInstruction::Call { destination, function, arguments } => {
                 if arguments.len() > 6 {
                     return Err(
-                        format!(
-                            "function call has {} arguments, but only 6 integer arguments are currently supported",
-                            arguments.len()
-                        )
+                        vec![
+                            CompilerError::internal(
+                                format!(
+                                    "function call has {} arguments, but only 6 integer arguments are currently supported",
+                                    arguments.len()
+                                )
+                            )
+                        ]
                     );
                 }
 
                 let function_name = self.function_names
                     .get(function)
-                    .ok_or_else(|| { format!("unknown function id {:?}", function) })?;
+                    .ok_or_else(|| {
+                        vec![CompilerError::internal(format!("unknown function id {:?}", function))]
+                    })?;
 
                 for (index, argument) in arguments.iter().enumerate() {
                     let register = Self::argument_register(index).ok_or_else(|| {
-                        format!("no argument register available for argument {}", index)
+                        vec![
+                            CompilerError::internal(
+                                format!("no argument register available for argument {}", index)
+                            )
+                        ]
                     })?;
 
                     self.emit_load_value(*argument, register)?;
@@ -570,7 +642,9 @@ impl<'a> FunctionCodegen<'a> {
 
                 let symbol = self.symbol_name(function_name);
 
-                writeln!(self.output, "    call {}", symbol).map_err(|e| e.to_string())?;
+                writeln!(self.output, "    call {}", symbol).map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
 
                 if let Some(destination) = destination {
                     self.emit_store_value(*destination, "rax")?;
@@ -581,28 +655,68 @@ impl<'a> FunctionCodegen<'a> {
                 // Phi nodes are handled by emit_edge_copies().
             }
 
-            IrInstruction::LoadField { destination, receiver, field } => todo!()
+            IrInstruction::LoadField { destination, receiver, field } => {
+                let offset = (*field as i32) * 8;
+
+                self.emit_load(*receiver, "rax")?;
+
+                if offset == 0 {
+                    writeln!(self.output, "    mov rax, [rax]").map_err(|e|
+                        vec![CompilerError::internal(e.to_string())]
+                    )?;
+                } else {
+                    writeln!(self.output, "    mov rax, [rax+{}]", offset).map_err(|e|
+                        vec![CompilerError::internal(e.to_string())]
+                    )?;
+                }
+
+                self.emit_store(*destination, "rax")?;
+            }
         }
 
         Ok(())
     }
 
-    fn emit_load_value(&mut self, value: ValueId, register: &str) -> Result<(), String> {
+    fn emit_load_value(
+        &mut self,
+        value: ValueId,
+        register: &str
+    ) -> Result<(), Vec<CompilerError>> {
         let offset = self.value_slots
             .get(&value)
-            .ok_or_else(|| { format!("no stack slot allocated for SSA value {:?}", value) })?;
+            .ok_or_else(|| {
+                vec![
+                    CompilerError::internal(
+                        format!("no stack slot allocated for SSA value {:?}", value)
+                    )
+                ]
+            })?;
 
-        writeln!(self.output, "    mov {}, [rbp-{}]", register, offset).map_err(|e| e.to_string())?;
+        writeln!(self.output, "    mov {}, [rbp-{}]", register, offset).map_err(|e|
+            vec![CompilerError::internal(e.to_string())]
+        )?;
 
         Ok(())
     }
 
-    fn emit_store_value(&mut self, value: ValueId, register: &str) -> Result<(), String> {
+    fn emit_store_value(
+        &mut self,
+        value: ValueId,
+        register: &str
+    ) -> Result<(), Vec<CompilerError>> {
         let offset = self.value_slots
             .get(&value)
-            .ok_or_else(|| { format!("no stack slot allocated for SSA value {:?}", value) })?;
+            .ok_or_else(|| {
+                vec![
+                    CompilerError::internal(
+                        format!("no stack slot allocated for SSA value {:?}", value)
+                    )
+                ]
+            })?;
 
-        writeln!(self.output, "    mov [rbp-{}], {}", offset, register).map_err(|e| e.to_string())?;
+        writeln!(self.output, "    mov [rbp-{}], {}", offset, register).map_err(|e|
+            vec![CompilerError::internal(e.to_string())]
+        )?;
 
         Ok(())
     }
@@ -611,25 +725,27 @@ impl<'a> FunctionCodegen<'a> {
     // Terminators
     // ---------------------------------------------------------------------
 
-    fn emit_terminator(&mut self, terminator: &Terminator) -> Result<(), String> {
+    fn emit_terminator(&mut self, terminator: &Terminator) -> Result<(), Vec<CompilerError>> {
         match terminator {
             Terminator::Jump(block) => {
                 writeln!(self.output, "    jmp {}", self.block_label(*block)).map_err(|e|
-                    e.to_string()
+                    vec![CompilerError::internal(e.to_string())]
                 )?;
             }
 
             Terminator::Branch { condition, then_block, else_block } => {
                 self.emit_load(*condition, "rax")?;
 
-                writeln!(self.output, "    cmp rax, 0").map_err(|e| e.to_string())?;
+                writeln!(self.output, "    cmp rax, 0").map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
 
                 writeln!(self.output, "    jne {}", self.block_label(*then_block)).map_err(|e|
-                    e.to_string()
+                    vec![CompilerError::internal(e.to_string())]
                 )?;
 
                 writeln!(self.output, "    jmp {}", self.block_label(*else_block)).map_err(|e|
-                    e.to_string()
+                    vec![CompilerError::internal(e.to_string())]
                 )?;
             }
 
@@ -638,13 +754,19 @@ impl<'a> FunctionCodegen<'a> {
                     self.emit_load(*value, "rax")?;
                 }
 
-                writeln!(self.output, "    leave").map_err(|e| e.to_string())?;
+                writeln!(self.output, "    leave").map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
 
-                writeln!(self.output, "    ret").map_err(|e| e.to_string())?;
+                writeln!(self.output, "    ret").map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
             }
 
             Terminator::Unreachable => {
-                writeln!(self.output, "    ud2").map_err(|e| e.to_string())?;
+                writeln!(self.output, "    ud2").map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
             }
         }
 
@@ -655,28 +777,50 @@ impl<'a> FunctionCodegen<'a> {
     // Values
     // ---------------------------------------------------------------------
 
-    fn emit_load(&mut self, value: ValueId, register: &str) -> Result<(), String> {
+    fn emit_load(&mut self, value: ValueId, register: &str) -> Result<(), Vec<CompilerError>> {
         let offset = self.value_slots
             .get(&value)
-            .ok_or_else(|| { format!("no stack slot allocated for SSA value {:?}", value) })?;
+            .ok_or_else(|| {
+                vec![
+                    CompilerError::internal(
+                        format!("no stack slot allocated for SSA value {:?}", value)
+                    )
+                ]
+            })?;
 
-        writeln!(self.output, "    mov {}, [rbp-{}]", register, offset).map_err(|e| e.to_string())?;
+        writeln!(self.output, "    mov {}, [rbp-{}]", register, offset).map_err(|e|
+            vec![CompilerError::internal(e.to_string())]
+        )?;
 
         Ok(())
     }
 
-    fn emit_store(&mut self, value: ValueId, register: &str) -> Result<(), String> {
+    fn emit_store(&mut self, value: ValueId, register: &str) -> Result<(), Vec<CompilerError>> {
         let offset = self.value_slots
             .get(&value)
-            .ok_or_else(|| { format!("no stack slot allocated for SSA value {:?}", value) })?;
+            .ok_or_else(|| {
+                vec![
+                    CompilerError::internal(
+                        format!("no stack slot allocated for SSA value {:?}", value)
+                    )
+                ]
+            })?;
 
-        writeln!(self.output, "    mov [rbp-{}], {}", offset, register).map_err(|e| e.to_string())?;
+        writeln!(self.output, "    mov [rbp-{}], {}", offset, register).map_err(|e|
+            vec![CompilerError::internal(e.to_string())]
+        )?;
 
         Ok(())
     }
 
-    fn emit_load_immediate(&mut self, register: &str, value: i64) -> Result<(), String> {
-        writeln!(self.output, "    mov {}, {}", register, value).map_err(|e| e.to_string())?;
+    fn emit_load_immediate(
+        &mut self,
+        register: &str,
+        value: i64
+    ) -> Result<(), Vec<CompilerError>> {
+        writeln!(self.output, "    mov {}, {}", register, value).map_err(|e|
+            vec![CompilerError::internal(e.to_string())]
+        )?;
 
         Ok(())
     }
@@ -712,16 +856,24 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
 
         IrInstruction::Phi { destination, .. } => { Some(*destination) }
 
-        IrInstruction::LoadField { destination,.. } => { Some(*destination) }
+        IrInstruction::LoadField { destination, .. } => { Some(*destination) }
     }
 }
 
 fn generate_function(
     output: &mut String,
+    program: &IrProgram,
     function: &IrFunction,
     function_names: &HashMap<FunctionId, String>,
     string_labels: &BTreeMap<String, String>,
     target: CodegenTarget
-) -> Result<(), String> {
-    FunctionCodegen::new(output, function, function_names, string_labels, target).generate()
+) -> Result<(), Vec<CompilerError>> {
+    FunctionCodegen::new(
+        output,
+        program,
+        function,
+        function_names,
+        string_labels,
+        target
+    ).generate()
 }

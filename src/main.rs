@@ -46,8 +46,11 @@ fn main() -> miette::Result<()> {
             println!("{}", assembly);
             Ok(())
         }
-        Err(error) => {
-            eprintln!("codegen error: {}", error);
+        Err(errors) => {
+             for error in errors {
+                eprintln!("codegen error: {:?}", Report::new(error));
+            }
+
             process::exit(1);
         }
     }
