@@ -85,6 +85,17 @@ pub enum IrInstruction {
         value: ValueId,
     },
 
+    AllocStruct {
+        destination: ValueId,
+        struct_id: StructId,
+    },
+
+    StoreField {
+        receiver: ValueId,
+        field: usize,
+        value: ValueId,
+    },
+
     LoadField {
         destination: ValueId,
         receiver: ValueId,

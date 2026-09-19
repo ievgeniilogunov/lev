@@ -3,7 +3,6 @@ use std::fmt::Write;
 
 use crate::compiler::error::CompilerError;
 
-use crate::ir::IrType;
 use crate::ir::ir::{
     BasicBlock,
     BlockId,
@@ -32,16 +31,10 @@ pub fn generate(program: &IrProgram, target: CodegenTarget) -> Result<String, Ve
 
     let string_labels = collect_string_literals(program);
 
-    let function_names: HashMap<_, _> = program
-    .functions
-    .iter()
-    .map(|function| {
-        (
-            function.id,
-            FunctionCodegen::function_symbol_name(program, function),
-        )
-    })
-    .collect();
+    let function_names: HashMap<_, _> = program.functions
+        .iter()
+        .map(|function| { (function.id, FunctionCodegen::function_symbol_name(program, function)) })
+        .collect();
 
     emit_string_section(&mut output, &string_labels, target)?;
 
@@ -139,6 +132,7 @@ struct FunctionCodegen<'a> {
     function: &'a IrFunction,
     value_slots: HashMap<ValueId, i32>,
     edge_copies: HashMap<BlockId, Vec<(ValueId, ValueId)>>,
+    struct_storage: HashMap<ValueId, i32>,
     function_names: &'a HashMap<FunctionId, String>,
     next_stack_offset: i32,
     target: CodegenTarget,
@@ -161,11 +155,40 @@ impl<'a> FunctionCodegen<'a> {
             function,
             value_slots: HashMap::new(),
             edge_copies: HashMap::new(),
+            struct_storage: HashMap::new(),
             function_names,
             next_stack_offset: 8,
             phi_temp_offset: 0,
             target,
             string_labels,
+        }
+    }
+
+    fn block_label(&self, block: BlockId) -> String {
+        let function_name = Self::function_symbol_name(self.program, self.function);
+        let symbol = self.symbol_name(&function_name);
+        format!(".L{}_{}", symbol, block.0)
+    }
+
+    fn allocate_struct_storage(&mut self) {
+        for block in &self.function.blocks {
+            for instruction in &block.instructions {
+                let IrInstruction::AllocStruct { destination, struct_id } = instruction else {
+                    continue;
+                };
+
+                let Some(structure) = self.program.structs
+                    .iter()
+                    .find(|structure| structure.id == *struct_id) else {
+                    continue;
+                };
+
+                self.struct_storage.insert(*destination, self.next_stack_offset);
+
+                let size = (structure.fields.len() as i32) * 8;
+
+                self.next_stack_offset += size;
+            }
         }
     }
 
@@ -195,6 +218,7 @@ impl<'a> FunctionCodegen<'a> {
     fn generate(mut self) -> Result<(), Vec<CompilerError>> {
         self.collect_phi_copies();
         self.allocate_value_slots();
+        self.allocate_struct_storage();
 
         // Reserve one additional stack slot for cycle-breaking phi copies.
         self.phi_temp_offset = self.next_stack_offset;
@@ -418,9 +442,7 @@ impl<'a> FunctionCodegen<'a> {
     // ---------------------------------------------------------------------
 
     fn emit_block(&mut self, block: &BasicBlock) -> Result<(), Vec<CompilerError>> {
-        let symbol = self.symbol_name(&self.function.name);
-
-        writeln!(self.output, ".L{}_{}:", symbol, block.id.0).map_err(|error|
+        writeln!(self.output, "{}:", self.block_label(block.id)).map_err(|error|
             vec![CompilerError::internal(error.to_string())]
         )?;
 
@@ -672,6 +694,49 @@ impl<'a> FunctionCodegen<'a> {
 
                 self.emit_store(*destination, "rax")?;
             }
+            IrInstruction::AllocStruct { destination, struct_id } => {
+                let offset = self.struct_storage
+                    .get(destination)
+                    .ok_or_else(|| {
+                        vec![
+                            CompilerError::internal(
+                                format!(
+                                    "no stack storage allocated for struct value {:?}",
+                                    destination
+                                )
+                            )
+                        ]
+                    })?;
+
+                let _structure = self.program.structs
+                    .iter()
+                    .find(|structure| structure.id == *struct_id)
+                    .ok_or_else(|| {
+                        vec![CompilerError::internal(format!("unknown struct id {:?}", struct_id))]
+                    })?;
+
+                writeln!(self.output, "    lea rax, [rbp-{}]", offset).map_err(|e|
+                    vec![CompilerError::internal(e.to_string())]
+                )?;
+
+                self.emit_store(*destination, "rax")?;
+            }
+            IrInstruction::StoreField { receiver, field, value } => {
+                let offset = (*field as i32) * 8;
+
+                self.emit_load(*receiver, "rax")?;
+                self.emit_load(*value, "rcx")?;
+
+                if offset == 0 {
+                    writeln!(self.output, "    mov [rax], rcx").map_err(|e|
+                        vec![CompilerError::internal(e.to_string())]
+                    )?;
+                } else {
+                    writeln!(self.output, "    mov [rax+{}], rcx", offset).map_err(|e|
+                        vec![CompilerError::internal(e.to_string())]
+                    )?;
+                }
+            }
         }
 
         Ok(())
@@ -825,11 +890,11 @@ impl<'a> FunctionCodegen<'a> {
         Ok(())
     }
 
-    fn block_label(&self, block: BlockId) -> String {
-        let symbol = self.symbol_name(&self.function.name);
+    // fn block_label(&self, block: BlockId) -> String {
+    //     let symbol = self.symbol_name(&self.function.name);
 
-        format!(".L{}_{}", symbol, block.0)
-    }
+    //     format!(".L{}_{}", symbol, block.0)
+    // }
 }
 
 // -------------------------------------------------------------------------
@@ -857,6 +922,8 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
         IrInstruction::Phi { destination, .. } => { Some(*destination) }
 
         IrInstruction::LoadField { destination, .. } => { Some(*destination) }
+        IrInstruction::AllocStruct { destination, .. } => { Some(*destination) }
+        IrInstruction::StoreField { .. } => None,
     }
 }
 

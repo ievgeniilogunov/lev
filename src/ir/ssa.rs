@@ -392,6 +392,24 @@ fn rename_block(
             IrInstruction::Phi { .. } => {
                 unreachable!("Phi instructions were separated above");
             }
+            IrInstruction::AllocStruct { destination, struct_id } => {
+                new_instructions.push(IrInstruction::AllocStruct {
+                    destination,
+                    struct_id,
+                });
+            }
+
+            IrInstruction::StoreField { receiver, field, value } => {
+                let receiver = resolve_alias(aliases, receiver);
+                let value = resolve_alias(aliases, value);
+
+                new_instructions.push(IrInstruction::StoreField {
+                    receiver,
+                    field,
+                    value,
+                });
+            }
+
             IrInstruction::LoadField { destination, receiver, field } => {
                 let receiver = resolve_alias(aliases, receiver);
 
@@ -623,5 +641,7 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
 
         IrInstruction::Call { destination, .. } => *destination,
         IrInstruction::LoadField { destination, .. } => Some(*destination),
+        IrInstruction::AllocStruct { destination, .. } =>  Some(*destination),
+        IrInstruction::StoreField { .. } => None
     }
 }

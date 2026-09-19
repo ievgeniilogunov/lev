@@ -404,7 +404,11 @@ impl<'a> Analyzer<'a> {
             }
 
             Stmt::Block { .. } =>
-                Err(vec![CompilerError::internal("internal error: unexpected nested block statement")]),
+                Err(
+                    vec![
+                        CompilerError::internal("internal error: unexpected nested block statement")
+                    ]
+                ),
 
             Stmt::Let { name, ty, value, span } => {
                 let declared_type = match self.resolve_type(ty, *span) {
@@ -874,6 +878,59 @@ impl<'a> Analyzer<'a> {
                         span: *span,
                     }
                 } else {
+                    // A call whose name is a struct name is a struct constructor.
+                    if let Some(struct_id) = self.symbols.find_struct(name) {
+                        let structure = self.symbols.struct_symbol(struct_id).clone();
+
+                        if arguments.len() != structure.fields.len() {
+                            self.errors.push(
+                                self.error_at(
+                                    format!(
+                                        "constructor '{}' expects {} argument(s), found {}",
+                                        name,
+                                        structure.fields.len(),
+                                        arguments.len()
+                                    ),
+                                    *span
+                                )
+                            );
+                        }
+
+                        let mut analyzed_arguments = Vec::with_capacity(arguments.len());
+
+                        for (index, argument) in arguments.iter().enumerate() {
+                            let value = self.analyze_expr(argument, scope);
+
+                            if let Some(field) = structure.fields.get(index) {
+                                if value.ty != field.ty {
+                                    self.errors.push(
+                                        self.error_at(
+                                            format!(
+                                                "argument {} of constructor '{}' has type {:?}, expected {:?}",
+                                                index + 1,
+                                                name,
+                                                value.ty,
+                                                field.ty
+                                            ),
+                                            value.span
+                                        )
+                                    );
+                                }
+                            }
+
+                            analyzed_arguments.push(value);
+                        }
+
+                        return HirExpr {
+                            kind: HirExprKind::StructInit {
+                                struct_id,
+                                arguments: analyzed_arguments,
+                            },
+                            ty: Type::Struct(struct_id),
+                            span: *span,
+                        };
+                    }
+
                     let Some(function_id) = self.symbols.find_function(name) else {
                         self.errors.push(
                             self.error_at(format!("unknown function '{}'", name), *span)

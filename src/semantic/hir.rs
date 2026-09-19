@@ -129,6 +129,11 @@ pub enum HirExprKind {
         arguments: Vec<HirExpr>,
     },
 
+    StructInit {
+        struct_id: StructId,
+        arguments: Vec<HirExpr>,
+    },
+
     Field {
         receiver: Box<HirExpr>,
         field: usize,

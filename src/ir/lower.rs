@@ -1,4 +1,4 @@
-use crate::{compiler::error::CompilerError, semantic::{ hir::*, types::Type }};
+use crate::{ compiler::error::CompilerError, semantic::{ hir::*, types::Type } };
 
 use super::ir::*;
 
@@ -376,24 +376,27 @@ impl FunctionBuilder {
             }
 
             HirExprKind::Call { function, arguments } => {
-                let arguments = arguments
-                    .iter()
-                    .filter_map(|argument| self.lower_expr(argument))
-                    .collect();
+                let mut values = Vec::with_capacity(arguments.len());
 
-                let destination = if expr.ty == Type::Void { None } else { Some(self.new_value()) };
+                for argument in arguments {
+                    values.push(self.lower_expr(argument)?);
+                }
+
+                let destination = match &expr.ty {
+                    Type::Void => None,
+                    _ => Some(self.new_value()),
+                };
 
                 self.emit(IrInstruction::Call {
                     destination,
                     function: *function,
-                    arguments,
+                    arguments: values,
                 });
 
                 destination
             }
             HirExprKind::Field { receiver, field } => {
                 let receiver_value = self.lower_expr(receiver)?;
-
                 let destination = self.new_value();
 
                 self.emit(IrInstruction::LoadField {
@@ -401,6 +404,26 @@ impl FunctionBuilder {
                     receiver: receiver_value,
                     field: *field,
                 });
+
+                Some(destination)
+            }
+            HirExprKind::StructInit { struct_id, arguments } => {
+                let destination = self.new_value();
+
+                self.emit(IrInstruction::AllocStruct {
+                    destination,
+                    struct_id: *struct_id,
+                });
+
+                for (field, argument) in arguments.iter().enumerate() {
+                    let value = self.lower_expr(argument)?;
+
+                    self.emit(IrInstruction::StoreField {
+                        receiver: destination,
+                        field,
+                        value,
+                    });
+                }
 
                 Some(destination)
             }
