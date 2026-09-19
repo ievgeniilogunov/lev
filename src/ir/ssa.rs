@@ -635,13 +635,13 @@ fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
         | IrInstruction::ConstBool { destination, .. }
         | IrInstruction::LoadLocal { destination, .. }
         | IrInstruction::Binary { destination, .. }
+        | IrInstruction::LoadField { destination, .. }
+        | IrInstruction::AllocStruct { destination, .. }
         | IrInstruction::Phi { destination, .. } => Some(*destination),
 
-        IrInstruction::StoreLocal { .. } => None,
-
         IrInstruction::Call { destination, .. } => *destination,
-        IrInstruction::LoadField { destination, .. } => Some(*destination),
-        IrInstruction::AllocStruct { destination, .. } =>  Some(*destination),
+        
+        IrInstruction::StoreLocal { .. } => None,
         IrInstruction::StoreField { .. } => None
     }
 }
